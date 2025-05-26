@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html>
+
+<style>
+    html {
+        /* background: url(img/alexander_zeros_4k.png) no-repeat center center fixed;
+        -webkit-background-size: cover;
+        -moz-background-size: cover;
+        -o-background-size: cover;
+        background-size: cover; */
+        background-color: #3B3B3B;
+    }
+
+    a {
+        color: #D6ACD6;
+    }
+
+    body {
+        color: #D6ACD6;
+        font-family: Verdana;
+        margin-left: 30px;
+        margin-top: 0px;
+    }
+
+    a:link {
+        text-decoration: underline;
+    }
+
+    a:visited {
+        text-decoration: none;
+    }
+
+    a:active {
+        text-decoration: underline;
+    }
+
+    a:hover {
+        text-decoration: underline;
+    }
+
+    .github-link {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
+      font-family: Verdana, sans-serif;
+      color: #D6ACD6;
+      border: 1px solid #D6ACD6;
+      padding: 8px 12px;
+      border-radius: 8px;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    .github-link:hover {
+      background: #2F2F2F;
+      color: white;
+    }
+
+    .github-logo {
+      width: 24px;
+      height: 24px;
+      margin-right: 10px;
+      fill: #D6ACD6;
+    }
+
+    .article-link {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
+      font-family: Verdana, sans-serif;
+      color: #D6ACD6;
+      border: 1px solid #D6ACD6;
+      padding: 8px 12px;
+      border-radius: 8px;
+      transition: background 0.3s, color 0.3s;
+    }
+
+    .article-link:hover {
+      background: #FFFFFF;
+      color: #2F2F2F;
+    }
+
+    .article-logo {
+      width: 24px;
+      height: 24px;
+      margin-right: 10px;
+      fill: #D6ACD6;
+    }
+
+    .content-wrapper {
+      display: flex;
+      gap: 40px;
+      max-width: 1200px;
+      align-items: center;
+    }
+
+    .text-section {
+      flex: 1;
+    }
+
+    .text-section h1 {
+      color: #D6ACD6;
+      margin-bottom: 16px;
+    }
+
+    .text-section p {
+      line-height: 1.6;
+      font-size: 1rem;
+    }
+
+    .image-box {
+      background-color: #3B3B3B;
+      border: 2px solid #D6ACD6;
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: 0 0 12px rgba(214, 172, 214, 0.3);
+      max-width: 400px;
+    }
+
+    .image-box img {
+      display: block;
+      max-width: 100%;
+      height: auto;
+      border-radius: 8px;
+    }
+
+    @media (max-width: 800px) {
+      .content-wrapper {
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .image-box {
+        margin-top: 20px;
+        max-width: 100%;
+      }
+    }
+
+
+    .back-button {
+      display: inline-block;
+      top: 20px;
+      right: 20px;
+      background-color: #D6ACD6;
+      color: #2F2F2F;
+      border: none;
+      padding: 10px 16px;
+      border-radius: 8px;
+      font-size: 0.95rem;
+      font-weight: bold;
+      text-decoration: none;
+      box-shadow: 0 0 8px rgba(214, 172, 214, 0.4);
+      transition: background-color 0.3s, color 0.3s;
+    }
+
+    .back-button:hover {
+      background-color: #FFFFFF;
+      color: #2F2F2F;
+    }
+
+    .header-bar {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 20px;
+    }
+
+    .page-title {
+        color: #D6ACD6;
+        margin: 0;
+        font-size: 2rem;
+    }
+
+
+  </style>
+
+
+  <script type="text/javascript" src="https://d3js.org/d3.v4.min.js"></script>
+</head>
+<body>
+</style>
+
+<body>
+    <br>
+    <div class="header-bar">
+        <h1 class="page-title">my research</h1>
+        <a class="back-button" href="index.html">home</a>
+    </div>
+
+    <div class="content-wrapper">
+      <div class="text-section">
+        <p>
+          Most of my research revolves around <a href="https://en.wikipedia.org/wiki/Topological_data_analysis">Topological Data Analysis</a>, a relatively new field at the intersection of applied mathematics, computer and data science. It empowers rigorous methods and tools from computational geometry and topology to extract information from, possibly large, complex and high dimensional datasets.
+        </p>
+        <p>Here are some of my research projects, a comprehensive list can be found in my <a href="https://scholar.google.com/citations?user=6KqQ7rYAAAAJ">Google Scholar</a>.</p>
+      </div>
+    </div>
+
+
+        <br>
+        <br>
+        <div class="content-wrapper">
+        <div class="text-section">
+            <h2>Euler characteristic curves and profiles</h2>
+            <p>
+            The <a href="https://en.wikipedia.org/wiki/Euler_characteristic">Euler characteristic</a> is probably one of the oldest topological invariants, in this work we analyze it in the context of filtered data. By tracking the evolution of the Euler characteristic at different scales we obtain a Euler characteristic curve.
+            </p>
+            <p>
+            We prove a novel stability result, bounding the distance between two Euler characteristic curves obtained from two filtered complexes with the Wasserstein distance between their persistence diagram, a widely studied distance in TDA for which many stability results are known.
+            Moreover, we generalize the Euler characteristic curve to complexes whose filtration take values on a general poset, thus lifting it in the realm of multiparamenter persistence. We call this generalization Euler characteristic profile.
+            </p>
+            <p>
+            Our stability results justify the use of Euler characteristic curves and profiles as data descriptors. In order to do so, we provide distributed algorithms to compute them in an efficient way for different type of data, leveraging the combinatorial structure of different types of cell complexes, namely Vietoris-Rips simplicial complexes and cubical complexes. Our proposed algorithms are fully parallelizable and can be executed in a streaming fashion, without the need of loading the entire input into memory all at once. This paves the way for TDA applications in big data scenarios.
+            </p>
+        </div>
+
+        <div class="image-box">
+            <img src="img/ecp.png" alt="Filtration diagram">
+        </div>
+        </div>
+
+        <a class="github-link" href="https://github.com/dioscuri-tda/pyEulerCurves" target="_blank">
+        <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
+             0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
+             -.01-.53.63-.01 1.08.58 1.23.82.72 1.2 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2
+             -3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.11 0 0 .67-.21 2.2.82A7.657
+             7.657 0 0 1 8 3.44c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.91.08 
+             2.11.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 
+             0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.003 8.003 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        View on GitHub
+        </a>
+        <a class="article-link" href="https://doi.org/10.1093/gigascience/giad094" target="_blank">
+        <svg class="article-logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 2C4.897 2 4 2.897 4 4v16c0 1.103.897 2 2 2h12c1.103 
+            0 2-.897 2-2V8l-6-6H6zm0 2h7v5h5v13H6V4zm2 6h8v2H8V10zm0 
+            4h8v2H8v-2z"/>
+        </svg>
+        Read the Article
+        </a>
+
+
+
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <div class="content-wrapper">
+        <div class="text-section">
+            <h2>Mapper-type algorithms and knot theory </h2>
+            <p>
+            We introduce new techniques to visualize high-dimensional data and relations inspired by the famous Mapper algorithm and one of its variations Ball Mapper.
+            </p>
+            <p>
+            We apply such new tools to data consisting of polynomial invariants for a large collection of topological knots and show how TDA techniques could help discovering new results in theoretical mathematics.
+            In particular we show how a mapper-based analysis of a large collection of Alexander and Jones polynomials is able to recover a theorem by Conway and provides a novel geometric interpretation of such result.
+            Moreover, our analysis hints to the existence of, currently unknown, relations between knot invariants.
+            </p>
+            And yes, you guessed right, the image on my homepage is plot of the complex roots of the Alexander polynomials for all prime knots up to 17 crossings.
+        </div>
+
+        <!-- <div class="image-box">
+            <script type="text/javascript">window.PlotlyConfig = { MathJaxConfig: 'local' };</script>
+            <script type="text/javascript" src="img/script_1.js"></script>
+
+            <div id="9f3d5d54-9924-485e-a98a-1a452d6700ff" class="plotly-graph-div" style="height:600px; width:800px;">
+            </div>
+
+            <script type="text/javascript" src="davide/jones3d/script_2.js"></script>
+        </div> -->
+
+        <div class="image-box">
+            <script type="text/javascript">window.PlotlyConfig = { MathJaxConfig: 'local' };</script>
+            <script type="text/javascript" src="img/jones3d/script_1.js"></script>
+
+            <div id="1e2bcf65-3362-430f-8d12-7210d43cfe7f" class="plotly-graph-div" style="height:400px; width:400px;"></div>
+            </div>
+
+            <script type="text/javascript" src="img/jones3d/script_2.js"></script>
+        </div>
+        
+        </div>
+
+        <a class="github-link" href="https://github.com/dioscuri-tda/pyBallMapper" target="_blank">
+        <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
+             0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
+             -.01-.53.63-.01 1.08.58 1.23.82.72 1.2 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2
+             -3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.11 0 0 .67-.21 2.2.82A7.657
+             7.657 0 0 1 8 3.44c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.91.08 
+             2.11.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 
+             0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.003 8.003 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        View on GitHub
+        </a>
+        <a class="article-link" href="https://doi.org/10.1080/10618600.2024.2343321" target="_blank">
+        <svg class="article-logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 2C4.897 2 4 2.897 4 4v16c0 1.103.897 2 2 2h12c1.103 
+            0 2-.897 2-2V8l-6-6H6zm0 2h7v5h5v13H6V4zm2 6h8v2H8V10zm0 
+            4h8v2H8v-2z"/>
+        </svg>
+        Read the Article
+        </a>
+
+
+
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <div class="content-wrapper">
+        <div class="text-section">
+            <h2>Computing harmonic persistent homology</h2>
+            <p>
+            The main motivation of this work is solving the reverse problem of mapping back the information from persistence barcodes to the data they were computed from.
+            In other words, we would be interested in associating to each bar in a persistence barcode a specific representative cycle.
+            However each bar in the barcode corresponds to a specific homology class, which is an equivalence class of cycles and there is no canonical way to choose a specific one.
+            </p>
+            <p>
+            The method we propose is based on the concept of harmonic cycles, which are particular cycles with the property of being orthogonal to the subspace of boundaries.
+            Each homology class has exactly one unique harmonic cycle, and it can be shown that such cycles are optimal in the sense that they are the ones with minimal norm among their homologous.
+            </p>
+            <p>
+            We implement our algorithm into a data analysis pipeline that allows to assign harmonic weights to samples or features, and use these weights as input for various machine learning models.  We apply this methodology to molecular biology data, showing how harmonic homology can be effectively used to extract topological feature from complex, high-dimensional datasets.
+            </p>
+            In December 2024 I spoke about this project at the <a href="https://www.youtube.com/watch?v=wPx5p5YLFsk">Applied Algebraic Topology Network seminar</a>.
+
+        </div>
+
+        <div class="image-box">
+            <img src="img/harmonic.png" alt="Harmonic cycle">
+        </div>
+        </div>
+
+        <a class="github-link" href="https://github.com/IBM/matilda" target="_blank">
+        <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
+             0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
+             -.01-.53.63-.01 1.08.58 1.23.82.72 1.2 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2
+             -3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.11 0 0 .67-.21 2.2.82A7.657
+             7.657 0 0 1 8 3.44c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.91.08 
+             2.11.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 
+             0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.003 8.003 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        View on GitHub
+        </a>
+        <a class="article-link" href="https://arxiv.org/abs/2311.06357" target="_blank">
+        <svg class="article-logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 2C4.897 2 4 2.897 4 4v16c0 1.103.897 2 2 2h12c1.103 
+            0 2-.897 2-2V8l-6-6H6zm0 2h7v5h5v13H6V4zm2 6h8v2H8V10zm0 
+            4h8v2H8v-2z"/>
+        </svg>
+        Read the Article
+        </a>
+
+
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <br>
+        <div class="content-wrapper">
+        <div class="text-section">
+            <h2>ClusterGraph</h2>
+            <p>
+            This project aims to bridge the gap between clustering algorithms and dimensionality reduction-based visualization techniques.
+            We introduce ClusterGraph, a new data structure built on the output of a clustering algorithm that allows to visualize the global layout of the data.
+            For a given datasets partitioned into clusters, ClusterGraph is an complete undirected graph whose vertices represent the clusters and edges are weighted by the distance between corresponding clusters, according to some similarity measure.
+            </p>
+            <p>
+            We propose a score function to evaluate how well this representation agrees with the underlying shape of the data, and propose two pruning strategies to remove edges from the complete graph while still conserving most of the information.
+            We showcase this construction alongside the output of the most used dimensionality reduction tools, demonstrating how their combined use helps capturing more information on the data's local and global layout.
+            </p>
+        </div>
+
+        <div class="image-box">
+            <img src="img/CG.png" alt="ClusterGraph">
+        </div>
+        </div>
+
+        <a class="github-link" href="https://github.com/dioscuri-tda/ClusterGraph" target="_blank">
+        <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
+        <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
+             0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52
+             -.01-.53.63-.01 1.08.58 1.23.82.72 1.2 1.87.86 2.33.66.07-.52.28-.86.5-1.06-1.78-.2
+             -3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.01.08-2.11 0 0 .67-.21 2.2.82A7.657
+             7.657 0 0 1 8 3.44c.68.003 1.37.092 2.01.27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.91.08 
+             2.11.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 
+             0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.003 8.003 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+        </svg>
+        View on GitHub
+        </a>
+        <a class="article-link" href="https://arxiv.org/abs/2411.05443" target="_blank">
+        <svg class="article-logo" viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M6 2C4.897 2 4 2.897 4 4v16c0 1.103.897 2 2 2h12c1.103 
+            0 2-.897 2-2V8l-6-6H6zm0 2h7v5h5v13H6V4zm2 6h8v2H8V10zm0 
+            4h8v2H8v-2z"/>
+        </svg>
+        Read the Article
+        </a>
+
+    
+</body>
+
+</html>
