@@ -202,14 +202,14 @@
         <div class="text-section">
             <h2>Euler characteristic curves and profiles</h2>
             <p>
-            The <a href="https://en.wikipedia.org/wiki/Euler_characteristic">Euler characteristic</a> is probably one of the oldest topological invariants, in this work we analyze it in the context of filtered data. By tracking the evolution of the Euler characteristic at different scales we obtain a Euler characteristic curve.
+            The <a href="https://en.wikipedia.org/wiki/Euler_characteristic">Euler characteristic</a> is probably one of the oldest topological invariants, in this work we analyze it in the context of filtered data. By building a filtered cell complex on top of it and tracking the evolution of its Euler characteristic at different scales we obtain an Euler characteristic curve, which can be used as a topological feature.
             </p>
             <p>
             We prove a novel stability result, bounding the distance between two Euler characteristic curves obtained from two filtered complexes with the Wasserstein distance between their persistence diagram, a widely studied distance in TDA for which many stability results are known.
-            Moreover, we generalize the Euler characteristic curve to complexes whose filtration take values on a general poset, thus lifting it in the realm of multiparamenter persistence. We call this generalization Euler characteristic profile.
+            Moreover, we generalize the Euler characteristic curve to complexes whose filtration take values in a general poset, thus lifting it in the realm of multiparameter persistence. We call this generalization Euler characteristic profile.
             </p>
             <p>
-            Our stability results justify the use of Euler characteristic curves and profiles as data descriptors. In order to do so, we provide distributed algorithms to compute them in an efficient way for different type of data, leveraging the combinatorial structure of different types of cell complexes, namely Vietoris-Rips simplicial complexes and cubical complexes. Our proposed algorithms are fully parallelizable and can be executed in a streaming fashion, without the need of loading the entire input into memory all at once. This paves the way for TDA applications in big data scenarios.
+            Our stability results justify the use of Euler characteristic curves and profiles as data descriptors. In order to do so, we provide distributed algorithms to compute them in an efficient way for different types of data, leveraging the combinatorial structure of different types of cell complexes, namely Vietoris-Rips simplicial complexes and cubical complexes. Our proposed algorithms are fully parallelizable and can be executed in a streaming fashion, without the need of loading the entire input into memory all at once. This paves the way for TDA applications in big data scenarios.
             </p>
         </div>
 
@@ -217,7 +217,7 @@
             <img src="img/ecp.png" alt="Filtration diagram">
         </div>
         </div>
-
+        <br>
         <a class="github-link" href="https://github.com/dioscuri-tda/pyEulerCurves" target="_blank">
         <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
@@ -282,7 +282,7 @@
         </div>
         
         </div>
-
+        <br>
         <a class="github-link" href="https://github.com/dioscuri-tda/pyBallMapper" target="_blank">
         <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
@@ -316,16 +316,16 @@
         <div class="text-section">
             <h2>Computing harmonic persistent homology</h2>
             <p>
-            The main motivation of this work is solving the reverse problem of mapping back the information from persistence barcodes to the data they were computed from.
+            The main motivation of this work is solving the inverse problem of mapping back the information from persistence barcodes to the data they were computed from.
             In other words, we would be interested in associating to each bar in a persistence barcode a specific representative cycle.
-            However each bar in the barcode corresponds to a specific homology class, which is an equivalence class of cycles and there is no canonical way to choose a specific one.
+            However, each bar in the barcode corresponds to a specific homology class, which is an equivalence class of cycles and there is no canonical way to choose a specific one.
             </p>
             <p>
             The method we propose is based on the concept of harmonic cycles, which are particular cycles with the property of being orthogonal to the subspace of boundaries.
-            Each homology class has exactly one unique harmonic cycle, and it can be shown that such cycles are optimal in the sense that they are the ones with minimal norm among their homologous.
+            Each homology class has exactly one, unique harmonic cycle, and it can be shown that such cycles are optimal in the sense that they have the minimal norm among all homologous cycles.
             </p>
             <p>
-            We implement our algorithm into a data analysis pipeline that allows to assign harmonic weights to samples or features, and use these weights as input for various machine learning models.  We apply this methodology to molecular biology data, showing how harmonic homology can be effectively used to extract topological feature from complex, high-dimensional datasets.
+            We implement our algorithm into a data analysis pipeline that allows to assign harmonic weights to samples or features, and use these weights as input for various machine learning models.  We apply this methodology to molecular biology data, showing how harmonic homology can be effectively used to extract topological features from complex, high-dimensional datasets.
             </p>
             In December 2024 I spoke about this project at the <a href="https://www.youtube.com/watch?v=wPx5p5YLFsk">Applied Algebraic Topology Network seminar</a>.
 
@@ -335,7 +335,7 @@
             <img src="img/harmonic.png" alt="Harmonic cycle">
         </div>
         </div>
-
+        <br>
         <a class="github-link" href="https://github.com/IBM/matilda" target="_blank">
         <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
@@ -382,7 +382,7 @@
             <img src="img/CG.png" alt="ClusterGraph">
         </div>
         </div>
-
+        <br>
         <a class="github-link" href="https://github.com/dioscuri-tda/ClusterGraph" target="_blank">
         <svg class="github-logo" viewBox="0 0 16 16" aria-hidden="true">
         <path d="M8 0C3.58 0 0 3.58 0 8a8.003 8.003 0 0 0 5.47 7.59c.4.07.55-.17.55-.38 
