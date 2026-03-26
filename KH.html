@@ -1,0 +1,709 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Khovanov Homology Visualizer</title>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap');
+
+  :root {
+    --bg: #0a0a0f;
+    --surface: #12121a;
+    --border: #1e1e2e;
+    --accent: #7c6af7;
+    --accent2: #f7a06a;
+    --text: #e8e8f0;
+    --muted: #5a5a7a;
+    --cell-empty: #12121a;
+    --th-bg: #0d0d14;
+    --cell-free: #0b1e3a;
+    --cell-tors: #2a1300;
+    --cell-both: #15103a;
+    --tooltip-bg: #1e1e38;
+    --legend-border: #2a2a4a;
+  }
+
+  :root.light {
+    --bg: #f5f5f7;
+    --surface: #ffffff;
+    --border: #d0d0dc;
+    --accent: #5b4ed4;
+    --accent2: #d4720a;
+    --text: #1a1a2e;
+    --muted: #888899;
+    --cell-empty: #f0f0f4;
+    --th-bg: #e8e8f0;
+    --cell-free: #ddeeff;
+    --cell-tors: #fff0dd;
+    --cell-both: #ede8ff;
+    --tooltip-bg: #ffffff;
+    --legend-border: #ccccdd;
+  }
+
+  /* theme toggle button */
+  #theme-toggle {
+    position: fixed;
+    top: 16px;
+    right: 20px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.75rem;
+    padding: 6px 12px;
+    border-radius: 20px;
+    cursor: pointer;
+    transition: background 0.2s, border-color 0.2s, color 0.2s;
+    z-index: 100;
+    letter-spacing: 0.05em;
+  }
+  #theme-toggle:hover { border-color: var(--accent); }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 20px;
+    gap: 28px;
+  }
+
+  header { text-align: center; }
+
+  h1 {
+    font-family: 'Syne', sans-serif;
+    font-size: 2rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    background: linear-gradient(135deg, var(--accent), var(--accent2));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .subtitle {
+    color: var(--muted);
+    font-size: 0.75rem;
+    margin-top: 6px;
+    letter-spacing: 0.05em;
+  }
+
+  .input-area {
+    width: 100%;
+    max-width: 860px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+  }
+
+  .var-row {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  label {
+    font-size: 0.7rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    white-space: nowrap;
+  }
+
+  .var-row label:first-child { min-width: 80px; }
+
+  .var-input {
+    width: 70px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    padding: 10px 14px;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  .var-input:focus { border-color: var(--accent); }
+
+  .plot-btn {
+    padding: 10px 14px;
+    height: 42px;
+    box-sizing: border-box;
+    line-height: 1;
+  }
+
+  input[type="text"] {
+    flex: 1;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.85rem;
+    padding: 10px 14px;
+    border-radius: 6px;
+    outline: none;
+    transition: border-color 0.2s;
+  }
+  input[type="text"]:focus { border-color: var(--accent); }
+
+  .poly-row { display: flex; flex-direction: column; gap: 4px; }
+
+  .poly-label {
+    font-size: 0.68rem;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .poly-label .swatch {
+    display: inline-block;
+    width: 10px; height: 10px;
+    border-radius: 2px;
+  }
+
+  textarea {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 0.82rem;
+    padding: 12px 14px;
+    border-radius: 6px;
+    outline: none;
+    width: 100%;
+    resize: vertical;
+    min-height: 70px;
+    transition: border-color 0.2s;
+  }
+  textarea:focus { border-color: var(--accent); }
+
+  button {
+    align-self: flex-end;
+    background: linear-gradient(135deg, var(--accent), #5b4ed4);
+    color: #fff;
+    border: none;
+    font-family: 'Syne', sans-serif;
+    font-size: 0.85rem;
+    font-weight: 700;
+    padding: 10px 28px;
+    border-radius: 6px;
+    cursor: pointer;
+    letter-spacing: 0.03em;
+    transition: opacity 0.2s, transform 0.1s;
+  }
+  button:hover { opacity: 0.9; }
+  button:active { transform: scale(0.98); }
+
+  #error {
+    color: #f76a6a;
+    font-size: 0.75rem;
+    min-height: 18px;
+  }
+
+  #output {
+    width: 100%;
+    max-width: 1300px;
+    overflow-x: auto;
+    padding-bottom: 12px;
+  }
+
+  .matrix-wrap { display: flex; justify-content: center; }
+
+  table {
+    border-collapse: collapse;
+    font-size: 0.82rem;
+  }
+
+  th, td {
+    border: 1px solid var(--border);
+    padding: 5px 12px;
+    text-align: center;
+    white-space: nowrap;
+  }
+
+  th {
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 0.72rem;
+    background: var(--th-bg);
+  }
+
+  th.corner {
+    font-size: 0.65rem;
+    color: var(--muted);
+    background: var(--th-bg);
+  }
+
+  td {
+    background: var(--cell-empty);
+    color: var(--text);
+    min-width: 52px;
+    height: 36px;
+    vertical-align: middle;
+    overflow: visible;
+    line-height: 1.6;
+  }
+
+  td.has-free { background: var(--cell-free); }
+  td.has-tors { background: var(--cell-tors); }
+  td.has-both { background: var(--cell-both); }
+
+  .z-sym  { color: #90c2ff; }
+  .z2-sym { color: #ffaa60; }
+  .z4-sym { color: #a8e6a3; }
+  .oplus  { color: var(--muted); font-size: 0.75em; }
+
+  td[data-tip] { position: relative; cursor: default; }
+  td[data-tip]:hover::after {
+    content: attr(data-tip);
+    position: absolute;
+    bottom: calc(100% + 6px);
+    left: 50%;
+    transform: translateX(-50%);
+    background: var(--tooltip-bg);
+    border: 1px solid var(--accent);
+    color: var(--text);
+    font-size: 0.68rem;
+    padding: 4px 10px;
+    border-radius: 4px;
+    white-space: nowrap;
+    z-index: 10;
+    pointer-events: none;
+  }
+
+  td.diag-highlight {
+    outline: 2px solid var(--accent);
+    box-shadow: inset 0 0 2px rgba(124,106,247,0.35);
+    z-index: 2;
+  }
+
+  .legend {
+    display: flex;
+    gap: 20px;
+    font-size: 0.7rem;
+    color: var(--muted);
+    flex-wrap: wrap;
+    justify-content: center;
+    margin-top: 14px;
+  }
+
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+
+  .legend-swatch {
+    width: 14px; height: 14px;
+    border-radius: 3px;
+    border: 1px solid var(--legend-border);
+  }
+
+  .stats {
+    color: var(--muted);
+    font-size: 0.65rem;
+    margin-top: 6px;
+    text-align: center;
+  }
+
+  .diag-section {
+    width: 100%;
+    max-width: 860px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .diag-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    text-align: center;
+  }
+
+  .diag-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 0.78rem;
+  }
+
+  .diag-table th {
+    background: var(--th-bg);
+    color: var(--muted);
+    font-weight: 400;
+    font-size: 0.68rem;
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    letter-spacing: 0.05em;
+  }
+
+  .diag-table td {
+    background: var(--surface);
+    color: var(--text);
+    padding: 5px 12px;
+    border: 1px solid var(--border);
+    text-align: center;
+    height: auto;
+    min-width: 0;
+    overflow: visible;
+    line-height: 1.6;
+  }
+</style>
+</head>
+<body>
+
+<button id="theme-toggle" onclick="toggleTheme()">☀ Light</button>
+
+<header>
+  <h1>Khovanov Homology Visualizer</h1>
+  <!-- <p class="subtitle">free part · ℤ₂ torsion · ℤ₄ torsion · combined grid</p> -->
+</header>
+
+<div class="input-area">
+  <div class="var-row">
+    <label>Col var</label>
+    <input type="text" id="varX" class="var-input" value="t" maxlength="10" placeholder="e.g. t">
+    <label>Row var</label>
+    <input type="text" id="varY" class="var-input" value="q" maxlength="10" placeholder="e.g. q">
+    <button class="plot-btn" onclick="plot(); enableDiagonalHover()">Plot Matrix</button>
+  </div>
+
+  <div class="poly-row">
+    <div class="poly-label">
+      <span class="swatch" style="background:#90c2ff"></span>
+      Free part
+    </div>
+    <textarea id="freeInput" placeholder="e.g. t^-4 q^-11 + 3 q^-1 + 2 t^2 q + ..."></textarea>
+  </div>
+
+  <div class="poly-row">
+    <div class="poly-label">
+      <span class="swatch" style="background:#ffaa60"></span>
+      ℤ₂ torsion
+    </div>
+    <textarea id="torsInput" placeholder="e.g. t^-3 q^-9 + 2 t^-1 q^-5 + ..."></textarea>
+  </div>
+
+  <div class="poly-row">
+    <div class="poly-label">
+      <span class="swatch" style="background:#a8e6a3"></span>
+      ℤ₄ torsion
+    </div>
+    <textarea id="tors4Input" placeholder="e.g. t^-1 q^-3 + t q + ..."></textarea>
+  </div>
+
+  <div id="error"></div>
+</div>
+
+<div id="output"></div>
+<div id="export-wrap" style="display:none"><button onclick="exportLatex()">Export LaTeX</button></div>
+<div id="diag-output"></div>
+
+<script>
+function parsePoly(str, varX, varY) {
+  if (!str.trim()) return {};
+  const esc = s => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+  str = str.trim().replace(/\u2212/g, '-').replace(/\s+/g, ' ');
+  str = str.replace(/(?<=[A-Za-z0-9])\s*([+\-])\s*/g, (_, op) => `|${op}`);
+
+  const rawTerms = str.split('|').map(s => s.trim()).filter(Boolean);
+  const coeffMap = {};
+
+  for (const term of rawTerms) {
+    if (!term) continue;
+    let t = term;
+    let coeff = 1;
+
+    // Strip leading + (from sentinel split)
+    if (t.startsWith('+')) t = t.slice(1).trimStart();
+
+    const leadMatch = t.match(/^(-?\s*\d+(?:\.\d+)?)\s*/);
+    if (leadMatch) {
+      coeff = parseFloat(leadMatch[1].replace(/\s/g, ''));
+      t = t.slice(leadMatch[0].length);
+    } else {
+      const signMatch = t.match(/^(-)\s*/);
+      if (signMatch) { coeff = -1; t = t.slice(signMatch[0].length); }
+    }
+
+    const xRe = new RegExp(`${esc(varX)}(?:\\^(-?\\d+))?`);
+    const xMatch = t.match(xRe);
+    const xExp = xMatch ? (xMatch[1] !== undefined ? parseInt(xMatch[1]) : 1) : 0;
+
+    const yRe = new RegExp(`${esc(varY)}(?:\\^(-?\\d+))?`);
+    const yMatch = t.match(yRe);
+    const yExp = yMatch ? (yMatch[1] !== undefined ? parseInt(yMatch[1]) : 1) : 0;
+
+    const key = `${xExp},${yExp}`;
+    coeffMap[key] = (coeffMap[key] || 0) + coeff;
+  }
+
+  Object.keys(coeffMap).forEach(k => { if (coeffMap[k] === 0) delete coeffMap[k]; });
+  return coeffMap;
+}
+
+function cellHTML(free, tors2, tors4) {
+  if (free === 0 && tors2 === 0 && tors4 === 0) return '';
+  const parts = [];
+
+  if (free !== 0) {
+    const sup = free === 1 ? '' : `<sup>${free}</sup>`;
+    parts.push(`<span class="z-sym">ℤ${sup}</span>`);
+  }
+
+  if (tors4 !== 0) {
+    const t4 = tors4 === 1
+      ? `<span class="z4-sym">ℤ<sub>4</sub></span>`
+      : `<span class="z4-sym">(ℤ<sub>4</sub>)<sup>${tors4}</sup></span>`;
+    parts.push(t4);
+  }
+
+  if (tors2 !== 0) {
+    const t2 = tors2 === 1
+      ? `<span class="z2-sym">ℤ<sub>2</sub></span>`
+      : `<span class="z2-sym">(ℤ<sub>2</sub>)<sup>${tors2}</sup></span>`;
+    parts.push(t2);
+  }
+
+  return parts.join(`<span class="oplus"> ⊕ </span>`);
+}
+
+function plot() {
+  const err = document.getElementById('error');
+  const out = document.getElementById('output');
+  err.textContent = '';
+  out.innerHTML = '';
+  document.getElementById('diag-output').innerHTML = '';
+
+  const varX = document.getElementById('varX').value.trim() || 't';
+  const varY = document.getElementById('varY').value.trim() || 'q';
+
+  let freeMap, torsMap, tors4Map;
+  try {
+    freeMap  = parsePoly(document.getElementById('freeInput').value,  varX, varY);
+    torsMap  = parsePoly(document.getElementById('torsInput').value,  varX, varY);
+    tors4Map = parsePoly(document.getElementById('tors4Input').value, varX, varY);
+  } catch(e) {
+    err.textContent = e.message;
+    return;
+  }
+
+  if (!Object.keys(freeMap).length && !Object.keys(torsMap).length && !Object.keys(tors4Map).length) {
+    err.textContent = 'No terms found — check variable names.';
+    return;
+  }
+
+  const allKeys = new Set([...Object.keys(freeMap), ...Object.keys(torsMap), ...Object.keys(tors4Map)]);
+  const pairs = [...allKeys].map(k => k.split(',').map(Number));
+  const xExps = pairs.map(k => k[0]);
+  const yExps = pairs.map(k => k[1]);
+
+  const xMin = Math.min(...xExps), xMax = Math.max(...xExps);
+  const yMin = Math.min(...yExps), yMax = Math.max(...yExps);
+
+  const yVals = [];
+  for (let y = yMax; y >= yMin; y--) if (y % 2 !== 0) yVals.push(y);
+  const xVals = [];
+  for (let x = xMin; x <= xMax; x++) xVals.push(x);
+
+  let html = '<div class="matrix-wrap"><table>';
+
+  // Header
+  html += `<tr><th class="corner">${varY} \\ ${varX}</th>`;
+  for (const x of xVals) html += `<th>${x}</th>`;
+  html += '</tr>';
+
+  for (const y of yVals) {
+    html += `<tr><th>${y}</th>`;
+    for (const x of xVals) {
+      const key = `${x},${y}`;
+      const f  = freeMap[key]  || 0;
+      const t2 = torsMap[key]  || 0;
+      const t4 = tors4Map[key] || 0;
+      const inner = cellHTML(f, t2, t4);
+      if (!inner) {
+        html += `<td></td>`;
+      } else {
+        const hasFree = f  > 0;
+        const hasTors = t2 > 0 || t4 > 0;
+        let cls = '';
+        if (hasFree && hasTors) cls = 'has-both';
+        else if (hasFree)       cls = 'has-free';
+        else                    cls = 'has-tors';
+        const tipParts = [];
+        if (f  > 0) tipParts.push(`ℤ×${f}`);
+        if (t4 > 0) tipParts.push(`ℤ₄×${t4}`);
+        if (t2 > 0) tipParts.push(`ℤ₂×${t2}`);
+        const delta = y - 2*x;
+        const tip = `${varX}=${x}, ${varY}=${y} : ${tipParts.join(' ⊕ ')}`;
+        html += `<td class="${cls}" data-tip="${tip}" data-delta="${delta}">${inner}</td>`;
+      }
+    }
+    html += '</tr>';
+  }
+
+  html += '</table></div>';
+
+  html += `
+  <div class="legend">
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--cell-free)"></div><span>free only</span></div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--cell-tors)"></div><span>torsion only</span></div>
+    <div class="legend-item"><div class="legend-swatch" style="background:var(--cell-both)"></div><span>free + torsion</span></div>
+  </div>
+  <div class="stats">${Object.keys(freeMap).length} free · ${Object.keys(torsMap).length} ℤ₂ torsion · ${Object.keys(tors4Map).length} ℤ₄ torsion terms</div>`;
+
+  out.innerHTML = html;
+  document.getElementById('export-wrap').style.display = 'block';
+
+  // ── Diagonals: degree(q) - 2 * degree(t) ──────────────────────────────────
+  const diagFree = new Set(
+    Object.entries(freeMap)
+      .filter(([,c]) => c !== 0)
+      .map(([k]) => {
+        const [x,y] = k.split(',').map(Number);
+        return y - 2*x;
+      })
+  );
+
+  const diagTors2 = new Set(
+    Object.entries(torsMap)
+      .filter(([,c]) => c !== 0)
+      .map(([k]) => {
+        const [x,y] = k.split(',').map(Number);
+        return y - 2*x;
+      })
+  );
+
+  const diagTors4 = new Set(
+    Object.entries(tors4Map)
+      .filter(([,c]) => c !== 0)
+      .map(([k]) => {
+        const [x,y] = k.split(',').map(Number);
+        return y - 2*x;
+      })
+  );
+
+  const fmt = set => [...set].sort((a,b)=>a-b).join(', ') || '—';
+
+  let dhtml = '<div class="diag-section">';
+  dhtml += `<div class="diag-title">${varY} − 2${varX} diagonals</div>`;
+  dhtml += '<table class="diag-table">';
+  dhtml += `<tr><th>free (ℤ)</th><td><span class="z-sym">${fmt(diagFree)}</span></td></tr>`;
+  dhtml += `<tr><th>ℤ₂ torsion</th><td><span class="z2-sym">${fmt(diagTors2)}</span></td></tr>`;
+  dhtml += `<tr><th>ℤ₄ torsion</th><td><span class="z4-sym">${fmt(diagTors4)}</span></td></tr>`;
+  dhtml += '</table></div>';
+  document.getElementById('diag-output').innerHTML = dhtml;
+}
+
+function enableDiagonalHover() {
+
+  const cells = document.querySelectorAll('td[data-delta]');
+
+  cells.forEach(cell => {
+
+    cell.addEventListener('mouseenter', () => {
+
+      const d = cell.dataset.delta;
+
+      document.querySelectorAll(`td[data-delta="${d}"]`)
+        .forEach(c => c.classList.add('diag-highlight'));
+    });
+
+    cell.addEventListener('mouseleave', () => {
+
+      const d = cell.dataset.delta;
+
+      document.querySelectorAll(`td[data-delta="${d}"]`)
+        .forEach(c => c.classList.remove('diag-highlight'));
+    });
+
+  });
+}
+
+function toggleTheme() {
+  const isLight = document.documentElement.classList.toggle('light');
+  document.getElementById('theme-toggle').textContent = isLight ? '☾ Dark' : '☀ Light';
+}
+
+function exportLatex() {
+  const varX = document.getElementById('varX').value.trim() || 't';
+  const varY = document.getElementById('varY').value.trim() || 'q';
+  
+  let freeMap, torsMap, tors4Map;
+  try {
+    freeMap  = parsePoly(document.getElementById('freeInput').value,  varX, varY);
+    torsMap  = parsePoly(document.getElementById('torsInput').value,  varX, varY);
+    tors4Map = parsePoly(document.getElementById('tors4Input').value, varX, varY);
+  } catch(e) {
+    alert('Parse error: ' + e.message);
+    return;
+  }
+
+  if (!Object.keys(freeMap).length && !Object.keys(torsMap).length && !Object.keys(tors4Map).length) {
+    alert('No data to export.');
+    return;
+  }
+
+  const allKeys = new Set([...Object.keys(freeMap), ...Object.keys(torsMap), ...Object.keys(tors4Map)]);
+  const pairs = [...allKeys].map(k => k.split(',').map(Number));
+  const xExps = pairs.map(k => k[0]);
+  const yExps = pairs.map(k => k[1]);
+
+  const xMin = Math.min(...xExps), xMax = Math.max(...xExps);
+  const yMin = Math.min(...yExps), yMax = Math.max(...yExps);
+
+  const yVals = [];
+  for (let y = yMax; y >= yMin; y--) if (y % 2 !== 0) yVals.push(y);
+  const xVals = [];
+  for (let x = xMin; x <= xMax; x++) xVals.push(x);
+
+  const cellLatex = (f, t2, t4) => {
+    if (f === 0 && t2 === 0 && t4 === 0) return '';
+    const parts = [];
+    if (f !== 0)  parts.push(f === 1 ? '\\mathbb{Z}' : `${f}\\mathbb{Z}`);
+    if (t4 !== 0) parts.push(t4 === 1 ? '\\mathbb{Z}_4' : `${t4}\\mathbb{Z}_4`);
+    if (t2 !== 0) parts.push(t2 === 1 ? '\\mathbb{Z}_2' : `${t2}\\mathbb{Z}_2`);
+    return parts.join(' \\oplus ');
+  };
+
+  let latex = '\\begin{array}{c' + '|c'.repeat(xVals.length) + '|}\n';
+  latex += `${varY} \\backslash ${varX}`;
+  for (const x of xVals) latex += ` & ${x}`;
+  latex += ' \\\\\n\\hline\n';
+
+  for (const y of yVals) {
+    latex += `${y}`;
+    for (const x of xVals) {
+      const key = `${x},${y}`;
+      const f  = freeMap[key]  || 0;
+      const t2 = torsMap[key]  || 0;
+      const t4 = tors4Map[key] || 0;
+      const cell = cellLatex(f, t2, t4);
+      latex += ` & ${cell || ''}`;
+    }
+    latex += ' \\\\\n\\hline\n';
+  }
+  latex += '\\end{array}';
+
+  const blob = new Blob([latex], {type: 'text/plain'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'khovanov-table.tex';
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+
+</script>
+</body>
+</html>
