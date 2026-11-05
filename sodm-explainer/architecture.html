@@ -1,0 +1,961 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="An illustrated guide to building decision models from pretrained LLMs, followed by a code-backed walkthrough of Clef-Flash's evidence routing and joint schema head.">
+  <title>Decision models &amp; Clef-Flash · Learn Clef</title>
+  <link rel="stylesheet" href="architecture.css">
+  <link rel="stylesheet" href="vendor/katex/katex.min.css">
+  <script defer src="vendor/katex/katex.min.js"></script>
+  <script defer src="vendor/katex/contrib/auto-render.min.js"></script>
+  <script defer src="architecture-math.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#overview">Skip to article</a>
+  <div class="shell">
+    <nav class="course-nav" aria-label="Document sections">
+       <p class="nav-title">PART I / DECISION MODELS</p>
+        <a href="#overview">Input, output, and key ideas</a>
+        <a href="#question-types">Three question types, one core</a>
+       <a href="#packing">Describe the decision</a>
+       <a href="#representations">Reuse the representations</a>
+       <a href="#head">Learn to compare</a>
+        <a href="#order">Make choice order irrelevant</a>
+        <a href="#training">Train the model</a>
+       <p class="nav-title nav-part">PART II / CLEF-FLASH</p>
+       <a href="#clef">Beyond a few vectors</a>
+       <a href="#clef-memory">Keep the evidence</a>
+       <a href="#clef-routing">Route options to tokens</a>
+       <a href="#clef-fields">Decide fields jointly</a>
+        <a href="#clef-scoring">Score and return answers</a>
+        <a href="#clef-training">Post-train for calibrated decisions</a>
+      <a class="reference-link" href="#sources">Sources &amp; reading notes</a>
+    </nav>
+    <main>
+      <article aria-labelledby="article-title">
+      <section id="overview">
+        <p class="kicker">Architecture walkthrough</p>
+        <h1 id="article-title">Decision models<br>&amp; Clef-Flash</h1>
+        <p class="lead">This guide explains how a pretrained language model can make decisions by scoring supplied options instead of generating answer text.</p>
+        <p><strong>Part I</strong> builds a simple decision-model blueprint: pack the state, question, and candidates; extract their representations; learn to compare them; and examine training and choice-order effects.</p>
+        <p><strong>Part II</strong> describes Cloudflare's <a href="https://huggingface.co/Cloudflare/clef-flash">Clef-Flash implementation</a>. Its joint schema head keeps token evidence available, lets options read that evidence, and lets related questions interact before returning typed answers.</p>
+        <h3>TL;DR</h3>
+        <ol class="article-list">
+          <li><strong>Reuse pretrained language representations.</strong> The transformer turns the request and candidate descriptions into contextual vectors.</li>
+          <li><strong>Learn a shared comparison rule.</strong> A decision head produces one score per supplied candidate. Softmax converts the scores into probabilities. The output is indexed by the request’s choices rather than the LLM’s vocabulary.</li>
+          <li><strong>In Clef-Flash, keep the evidence accessible.</strong> Options read token-level evidence, and related questions exchange information before their options are scored.</li>
+        </ol>
+      </section>
+
+      <section id="question-types" class="chapter-section">
+        <p class="kicker">Before the architecture / Question types</p>
+        <h2>Three ways to interpret option probabilities</h2>
+        <p>A conventional sentiment classifier has a fixed output space: positive, negative, and neutral. The developer knows those labels before training and can build a three-output classification head. A general-purpose decision model instead receives <strong>the question and its candidate descriptions with each request</strong>. Today it might choose a support team; tomorrow it might compare refund reasons. Its shared scorer operates on candidate representations rather than a permanently assigned set of class outputs.</p>
+        <p>“Universal” describes that flexible contract, not unlimited capacity or guaranteed generalization. Candidate descriptions can be detailed and candidate counts can vary, subject to context, compute, and serving limits. Within that contract, <strong><code>choice</code>, <code>noul</code>, and <code>score</code> are closely related architecturally</strong>:</p>
+        <div class="schema-decisions question-type-cards">
+          <section class="schema-decision" aria-labelledby="type-choice">
+            <div class="schema-card-heading"><h3 id="type-choice">Choose among alternatives</h3><span class="schema-type">choice</span></div>
+            <p>Which team should handle the duplicate-charge request?</p>
+            <ul class="schema-options" aria-label="Choice candidates"><li class="team-billing">Billing</li><li class="team-technical">Technical support</li><li class="team-account">Account access</li></ul>
+            <p class="type-readout"><strong>Readout:</strong> probabilities over the supplied teams; return the highest-probability team when a single choice is needed.</p>
+          </section>
+          <section class="schema-decision" aria-labelledby="type-noul">
+            <div class="schema-card-heading"><h3 id="type-noul">Evaluate a proposition</h3><span class="schema-type">noul · boolean</span></div>
+            <p>Is the customer asking for a refund?</p>
+            <ul class="schema-options" aria-label="Boolean candidates"><li>True / Yes</li><li>False / No</li></ul>
+            <p class="type-readout"><strong>Readout:</strong> a two-choice distribution, summarized by the probability of True. This is a Bernoulli outcome, not a “null,” missing-value, or abstention response.</p>
+          </section>
+          <section class="schema-decision" aria-labelledby="type-score">
+            <div class="schema-card-heading"><h3 id="type-score">Locate an answer on a scale</h3><span class="schema-type">score</span></div>
+            <p>How urgent is the request?</p>
+            <ol class="schema-options schema-levels" start="0" aria-label="Score candidates in ascending order"><li><b>0</b> Routine</li><li><b>1</b> Soon</li><li><b>2</b> Immediate</li></ol>
+            <p class="type-readout"><strong>Readout:</strong> probabilities over ordered levels, mapped to a numeric summary such as their probability-weighted average. Preserve the level order and declared numeric spacing.</p>
+          </section>
+        </div>
+        <div class="takeaway"><span class="eyebrow">The architectural common ground</span><p>Encode the state, question, and options → score valid options → normalize their scores. Boolean questions supply two options; score questions supply ordered levels. Task conditioning, training targets, and final post-processing can differ without requiring three fundamentally different backbones.</p></div>
+        <p>We therefore develop the <strong>choice</strong> path first. It exposes the shared machinery; <code>noul</code> and <code>score</code> reuse it with different option semantics and readout rules. The terminology comes from the supplied material; this guide uses the local API’s spelling <code>noul</code> for the boolean mode. Part II shows its <a href="#typed-readout">concrete typed readouts</a>.</p>
+        <aside class="reading-note"><p><strong>Schema-bound does not mean always correct.</strong> Restricting answers to supplied options is not a general “no hallucination” guarantee. The precise architectural guarantee is narrower: the choice readout cannot invent an out-of-schema label. It can still select the wrong team, report an overconfident probability, or miss the correct answer because that answer was never supplied.</p></aside>
+      </section>
+
+      <section id="packing" class="chapter-section">
+        <p class="kicker">01 / Describe the decision</p>
+        <h2>Give the model the whole decision</h2>
+        <p>Start by separating the facts from the decision. The <strong>state</strong> is the customer’s message. The <strong>question</strong> asks which team should handle it. The <strong>candidates</strong> describe the available teams. The same state could support a different question—such as whether the customer needs a refund—so the question is part of the input, too.</p>
+        <p>For this blueprint, we serialize the question, state, and <em>K</em> candidate descriptions together. This is a <strong>joint encoder</strong>: the transformer processes the situation and choices within the same sequence. We finish with a fixed suffix, <code>The answer is:</code>. Despite its wording, this suffix is not an invitation to generate text. It gives us a consistent location from which to read a hidden state.</p>
+        <figure class="visual" id="packing-diagram">
+          <div class="figure-heading"><span class="eyebrow">ONE DATASET RECORD → ONE INPUT SEQUENCE</span><span>Read from top to bottom ↓</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Input-packing diagram; scroll horizontally on small screens">
+            <svg class="architecture-map packing-map" viewBox="0 0 1120 490" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="packing-title packing-desc">
+              <title id="packing-title">Pack the situation and choices into an input sequence</title>
+              <desc id="packing-desc">A dataset example contains a state, a question, and three candidate choices. Serialize the input in this order: question, state, the prompt Pick from these options, C1, C2, C3, and the fixed suffix The answer is colon. Question and state together describe the situation.</desc>
+              <defs><marker id="packing-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+              <text x="190" y="35" class="stage">ONE DATASET EXAMPLE</text>
+              <rect class="record-outline" x="175" y="53" width="770" height="180" rx="10"/>
+              <text x="205" y="99">state</text><rect class="state-block" x="355" y="73" width="380" height="38" rx="5"/><text x="545" y="98" class="center small">“I was charged twice for my subscription.”</text>
+              <text x="205" y="153">question</text><rect class="question-block" x="355" y="127" width="340" height="38" rx="5"/><text x="525" y="152" class="center small">Which team should handle this request?</text>
+              <text x="205" y="207">choices</text>
+              <rect class="choice-one" x="355" y="181" width="128" height="38" rx="5"/><text x="419" y="200" class="center small" data-math-align="center">C₁ · Billing</text>
+              <rect class="choice-two" x="499" y="181" width="190" height="38" rx="5"/><text x="594" y="200" class="center small" data-math-align="center">C₂ · Technical support</text>
+              <rect class="choice-three" x="705" y="181" width="205" height="38" rx="5"/><text x="807" y="200" class="center small" data-math-align="center">C₃ · Account access</text>
+              <path class="packing-edge" d="M300 238V317"/><text x="320" y="283" class="small">Serialize question, state, and choices; add prompt + suffix.</text>
+              <g transform="translate(0 -80)">
+              <text x="35" y="403" class="stage">ONE INPUT SEQUENCE</text>
+              <rect class="record-outline" x="20" y="418" width="1080" height="69" rx="8"/>
+              <rect class="question-block" x="35" y="433" width="115" height="38" rx="4"/><text x="92" y="457" class="center small">question</text>
+              <rect class="state-block" x="163" y="433" width="155" height="38" rx="4"/><text x="240" y="457" class="center small">state</text>
+              <rect class="question-block" x="331" y="433" width="265" height="38" rx="4"/><text x="463" y="457" class="center small">Pick from these options</text>
+              <rect class="choice-one" x="609" y="433" width="80" height="38" rx="4"/><text x="649" y="452" class="center" data-math-align="center">C₁</text>
+              <rect class="choice-two" x="702" y="433" width="90" height="38" rx="4"/><text x="747" y="452" class="center" data-math-align="center">C₂</text>
+              <rect class="choice-three" x="805" y="433" width="80" height="38" rx="4"/><text x="845" y="452" class="center" data-math-align="center">C₃</text>
+              <rect class="answer-token" x="898" y="433" width="187" height="38" rx="4"/><text x="991" y="457" class="center small">The answer is:</text>
+              <path class="situation-bracket" d="M35 499V511H318V499"/><text x="177" y="539" class="center small">the situation</text>
+              <text x="463" y="515" class="center small">prompt</text><text x="747" y="515" class="center small">candidate descriptions</text><text x="991" y="515" class="center small">fixed / forced ending</text>
+              </g>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 1 · Pack the whole decision into one sequence.</strong> Serialize the question, state, and candidate descriptions, then add a fixed suffix for reading a hidden state.</figcaption>
+        </figure>
+        <p>During training, the record also carries the correct candidate’s index, <code>y</code>. For our example, that index points to Billing. Keeping the label outside the sequence is essential: the model must learn to make the decision, not read the answer out of its input.</p>
+        <details><summary>Implementation note: preserve token boundaries</summary><div class="detail-body">
+        <p>The tokenizer turns this text into <em>N</em> tokens. Record the index of each candidate’s last content token and the final non-padding token. Use token spans or tokenizer offsets so that punctuation, separators, and subword tokenization are handled consistently.</p>
+        <div class="formula">\[\begin{aligned}
+          \texttt{input\_ids} &amp;: [B,N] \\
+          \texttt{choice\_end} &amp;: [B,K] \\
+          \texttt{answer\_end} &amp;: [B]
+        \end{aligned}\]</div>
+        <p class="note">B = batch size; N and K can be padded batch dimensions. Keep token and candidate masks. Preserve all candidate boundaries and the suffix when applying a context-length budget.</p>
+        </div></details>
+      </section>
+
+      <section id="representations" class="chapter-section">
+        <p class="kicker">02 / Reuse the representations</p>
+        <h2>Language knowledge becomes decision evidence</h2>
+        <p>An LLM does more than produce vocabulary probabilities. Before its language-model head predicts a token, the transformer has built a <strong>hidden state</strong> at every input position: a vector of width <em>d</em> that represents that token in context. These are the features we want to reuse.</p>
+        <p>Pass our packed sequence through the pretrained backbone and take its final hidden states, rather than its next-token logits. We then select one vector for each candidate and one shared vector after all the candidates. For the triage example, a long token sequence becomes just <strong>four vectors</strong>.</p>
+        <figure class="visual">
+          <div class="figure-heading"><span class="eyebrow">THE JOINT-ENCODER BLUEPRINT</span><span>Read from bottom to top ↑</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Decision-model diagram; scroll horizontally on small screens">
+            <svg class="architecture-map" data-math-render="false" viewBox="0 0 1120 735" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="diagram-title diagram-desc">
+              <title id="diagram-title">A pretrained transformer plus a decision head</title>
+              <desc id="diagram-desc">Read upward. Question, state, prompt, three candidate choices, and a fixed answer suffix are packed into a single input sequence. All input tokens pass through the pretrained transformer. The last content token of each choice supplies a choice vector, and the last suffix token supplies an answer vector. These four final hidden states enter a decision head, which outputs three scores and a softmax probability distribution. Example probabilities are 0.72, 0.19, and 0.09.</desc>
+              <defs>
+                <marker id="arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto-start-reverse"><path d="M0 0L8 4L0 8Z" fill="context-stroke"/></marker>
+                <g id="token-row">
+                  <g class="neutral-token"><rect x="75" y="0" width="20" height="20"/><rect x="115" y="0" width="20" height="20"/><rect x="170" y="0" width="20" height="20"/><rect x="210" y="0" width="20" height="20"/><rect x="250" y="0" width="20" height="20"/><rect x="310" y="0" width="20" height="20"/><rect x="355" y="0" width="20" height="20"/><rect x="400" y="0" width="20" height="20"/></g>
+                  <g class="choice-one"><rect class="faded" x="475" y="0" width="20" height="20"/><rect x="515" y="0" width="20" height="20"/></g>
+                  <g class="choice-two"><rect class="faded" x="590" y="0" width="20" height="20"/><rect class="faded" x="630" y="0" width="20" height="20"/><rect x="670" y="0" width="20" height="20"/></g>
+                  <g class="choice-three"><rect class="faded" x="745" y="0" width="20" height="20"/><rect x="785" y="0" width="20" height="20"/></g>
+                  <g class="answer-token"><rect class="faded" x="900" y="0" width="20" height="20"/><rect x="970" y="0" width="20" height="20"/></g>
+                </g>
+              </defs>
+
+              <text x="40" y="44" class="stage">04 / PROBABILITIES</text>
+              <text x="545" y="45" class="probability c1">0.72</text><text x="685" y="45" class="probability c2">0.19</text><text x="825" y="45" class="probability c3">0.09</text>
+              <text x="545" y="70" class="center small" data-tex="P(C_1)">P(C₁)</text><text x="685" y="70" class="center small" data-tex="P(C_2)">P(C₂)</text><text x="825" y="70" class="center small" data-tex="P(C_3)">P(C₃)</text>
+              <path class="edge c1" d="M545 113V83"/><path class="edge c2" d="M685 113V83"/><path class="edge c3" d="M825 113V83"/>
+              <a href="#head" aria-label="Read about the decision head"><rect class="head-block" x="475" y="116" width="420" height="92" rx="6"/><text x="685" y="153" class="center block-title">Decision head</text><text x="685" y="182" class="center small">one score per choice → softmax</text></a>
+              <text x="40" y="160" class="stage">03 / LEARNED READOUT</text>
+              <text x="40" y="184" class="small">K choice vectors + 1 answer vector</text>
+              <path class="edge c1" d="M525 291V211"/><path class="edge c2" d="M680 291V211"/><path class="edge c3" d="M795 291V211"/>
+              <path class="edge answer" d="M980 291V163H900"/>
+              <text x="539" y="254" class="small c1" data-tex="c_1">c₁</text><text x="694" y="254" class="small c2" data-tex="c_2">c₂</text><text x="809" y="254" class="small c3" data-tex="c_3">c₃</text><text x="993" y="254" class="small answer" data-tex="a">a</text>
+              <use href="#token-row" y="295"/>
+              <g class="token-tracks"><path d="M85 318V616M125 318V616M180 318V616M220 318V616M260 318V616M320 318V616M365 318V616M410 318V616M485 318V616M525 318V616M600 318V616M640 318V616M680 318V616M755 318V616M795 318V616M910 318V616M980 318V616"/></g>
+              <a href="#representations" aria-label="Read about the pretrained backbone">
+                <rect class="layer" x="55" y="338" width="985" height="46" rx="3"/><text x="550" y="367" class="center">Transformer layer · final hidden states</text>
+                <use href="#token-row" y="405"/>
+                <rect class="layer" x="55" y="449" width="985" height="46" rx="3"/><text x="550" y="478" class="center">Transformer layers · contextualize every token</text>
+                <text x="550" y="524" class="center small">⋮ repeated backbone blocks ⋮</text>
+                <rect class="layer" x="55" y="543" width="985" height="46" rx="3"/><text x="550" y="572" class="center">Transformer layer · pretrained language knowledge</text>
+              </a>
+              <text x="40" y="330" class="stage">02 / BACKBONE</text>
+              <use href="#token-row" y="603"/>
+              <g class="input-strip">
+                <rect x="55" y="645" width="100" height="38" rx="3"/><rect x="162" y="645" width="130" height="38" rx="3"/><rect x="299" y="645" width="145" height="38" rx="3"/>
+                <rect class="choice-one" x="464" y="645" width="81" height="38" rx="3"/><rect class="choice-two" x="580" y="645" width="120" height="38" rx="3"/><rect class="choice-three" x="735" y="645" width="80" height="38" rx="3"/><rect class="answer-token" x="880" y="645" width="150" height="38" rx="3"/>
+              </g>
+              <text x="105" y="669" class="center small">question</text><text x="227" y="669" class="center small">state</text><text x="372" y="669" class="center small">prompt</text><text x="505" y="669" class="center small">C₁</text><text x="640" y="669" class="center small">C₂</text><text x="775" y="669" class="center small">C₃</text><text x="955" y="669" class="center small">fixed suffix</text>
+              <text x="40" y="718" class="stage">01 / ONE PACKED INPUT SEQUENCE</text><text x="1040" y="718" class="small right">All tokens are supplied in advance.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 2 · A new readout on a pretrained backbone.</strong> Read upward: all tokens pass through the transformer, but only the three candidate endpoints and the final suffix state enter the decision head. Token counts and output probabilities are illustrative.</figcaption>
+        </figure>
+        <p>The <strong>candidate vector</strong> \(c_i = H[\operatorname{end}(C_i)]\) comes from the last content token of candidate i. With full causal attention, it has access to that candidate’s text and everything before it. The <strong>answer vector</strong> \(a = H[\text{last non-padding token}]\) comes from the final suffix token, which has access to the question, state, and all the choices.</p>
+        <p>“Answer vector” names its role in our architecture; it is not an answer the LLM has generated. The suffix makes a convenient readout location, but pretraining does not guarantee that this state is already a good summary for our task. The decision objective will teach the trainable parts of the model how to use it.</p>
+        <p>The head receives <strong>K + 1 vectors</strong>, each of width <em>d</em>. Endpoint gathering is a simple readout strategy; span pooling or a learned pooling operation are other design choices.</p>
+        <details><summary>How can a causal LLM process this in one forward pass?</summary><div class="detail-body"><p>Every input token is already known. A transformer can process the supplied sequence in one forward evaluation while a causal attention mask restricts each position to its prefix. Layers still execute in sequence; there is no loop that generates an answer token and feeds it back into the model.</p><p>Call the backbone’s hidden-state forward path and pass the selected vectors to the decision head. Computing next-token vocabulary logits is unnecessary for this readout.</p></div></details>
+        <details><summary>Causal versus bidirectional attention</summary><div class="detail-body"><p><strong>Causal:</strong> a candidate can see earlier candidates but not later ones. The final suffix can see all candidates. <strong>Bidirectional:</strong> candidate tokens can attend in both directions, subject to masking and context limits.</p><p>Both support this readout pattern. Retain the pretrained backbone’s attention behavior for a straightforward baseline; changing its mask is an architectural adaptation that needs training and evaluation.</p></div></details>
+      </section>
+
+      <section id="head" class="chapter-section">
+        <p class="kicker">03 / Learn to compare</p>
+        <h2>From a few vectors to a choice</h2>
+        <p>We now have representations of the decision and its choices, but not yet a rule for selecting a team. The head supplies that rule. It applies the <strong>same scoring function</strong> to each pair \((a,c_i)\), producing one scalar score, or logit, per candidate.</p>
+        <p>There are several ways to build this comparison. We can start with a dot product, make the comparison itself learnable, then let the vectors exchange information before scoring. Each step adds flexibility; none guarantees an improvement without training and evaluation.</p>
+        <h3 id="dot-product">Start with a dot product</h3>
+        <p>Reuse the answer vector <code>a</code> for every candidate. Multiply each of its dimensions by the matching dimension of <code>cᵢ</code>, then add those products into a single score. All candidate scores can be computed together as a matrix–vector product.</p>
+        <figure class="visual" id="dot-product-diagram">
+          <div class="figure-heading"><span class="eyebrow">WAY ONE / DOT PRODUCT</span><span>One answer vector → K comparisons</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Dot-product scoring diagram; scroll horizontally on small screens">
+            <svg class="architecture-map dot-product-map" viewBox="0 0 1120 440" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="dot-title dot-desc">
+              <title id="dot-title">Compare the answer vector with every choice vector</title>
+              <desc id="dot-desc">The same answer vector branches into three dot-product comparisons, one with each candidate vector. Six squares represent illustrative feature dimensions, not tokens. Candidate C1, marked as the ground-truth choice, receives score 0.94; C2 receives 0.36; C3 receives 0.29. These are illustrative similarity scores before softmax, not probabilities.</desc>
+              <defs>
+                <g id="dot-vector">
+                  <rect x="0" y="0" width="27" height="30" opacity=".85"/><rect x="33" y="0" width="27" height="30" opacity=".4"/><rect x="66" y="0" width="27" height="30" opacity=".7"/><rect x="99" y="0" width="27" height="30" opacity=".3"/><rect x="132" y="0" width="27" height="30"/><rect x="165" y="0" width="27" height="30" opacity=".6"/>
+                </g>
+              </defs>
+              <text x="40" y="177" class="stage" data-tex="\text{ANSWER VECTOR } a">ANSWER VECTOR a</text>
+              <use href="#dot-vector" class="answer-token" x="40" y="200"/>
+              <text x="40" y="258" class="small">same a for every choice</text>
+              <path class="comparison-branch" d="M250 215L425 95M250 215H425M250 215L425 335"/>
+              <g class="dot-operation"><circle cx="338" cy="155" r="17"/><circle cx="338" cy="215" r="17"/><circle cx="338" cy="275" r="17"/></g>
+              <text x="338" y="161" class="center">·</text><text x="338" y="221" class="center">·</text><text x="338" y="281" class="center">·</text>
+              <text x="450" y="57" class="c1">C₁ · correct choice</text>
+              <use href="#dot-vector" class="choice-one" x="450" y="80"/>
+              <text x="450" y="177" class="c2">C₂</text>
+              <use href="#dot-vector" class="choice-two" x="450" y="200"/>
+              <text x="450" y="297" class="c3">C₃</text>
+              <use href="#dot-vector" class="choice-three" x="450" y="320"/>
+              <text x="675" y="102" class="center">=</text><text x="675" y="222" class="center">=</text><text x="675" y="342" class="center">=</text>
+              <text x="720" y="38" class="stage">SIMILARITY SCORE sᵢ</text>
+              <text x="720" y="62" class="small">before softmax</text>
+              <rect class="choice-one" x="720" y="86" width="263.2" height="18" rx="2"/><text x="1060" y="102" class="right">0.94</text>
+              <rect class="choice-two" x="720" y="206" width="100.8" height="18" rx="2"/><text x="1060" y="222" class="right">0.36</text>
+              <rect class="choice-three" x="720" y="326" width="81.2" height="18" rx="2"/><text x="1060" y="342" class="right">0.29</text>
+              <text x="40" y="407" class="small">Squares = feature dimensions within a vector. Colors identify candidates; shading is schematic.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 3 · One answer vector, three comparisons.</strong> The squares now represent feature dimensions, not tokens. Billing has the highest illustrative score. “Correct” identifies the external training label; the head does not receive it. Shading is schematic.</figcaption>
+        </figure>
+        <p>A bare dot product has no trainable parameters. If we use it as our head, learning must happen in the backbone or in added projections. We cannot assume that pretrained hidden states already align in the way the routing task needs.</p>
+        <h3 id="bilinear">Make the comparison learnable</h3>
+        <p>A dot product pairs matching dimensions. A <strong>bilinear layer</strong> inserts a learned matrix <code>W</code>, so any answer dimension can interact with any choice dimension. Each pair contributes a weighted product; summing those contributions gives one candidate score.</p>
+        <figure class="visual" id="bilinear-diagram">
+          <div class="figure-heading"><span class="eyebrow">WAY TWO / BILINEAR LAYER</span><span>A learned weight for every feature pair</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Bilinear scoring diagram; scroll horizontally on small screens">
+            <svg class="architecture-map bilinear-map" viewBox="0 0 1120 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="bilinear-title bilinear-desc">
+              <title id="bilinear-title">A learned matrix connects answer and choice features</title>
+              <desc id="bilinear-desc">Six illustrative answer dimensions run across the top, and six dimensions of candidate C1 run down the left. A six-by-six grid contains a learned weight for each feature pair. With answer dimensions as columns and choice dimensions as rows, the displayed grid is W transposed. The score is a transposed times W times c1. The same matrix is reused for C2 and C3. Setting W to the identity recovers the dot product.</desc>
+              <defs>
+                <g id="bilinear-weight-row">
+                  <rect x="0" y="0" width="42" height="42" opacity=".35"/><rect x="50" y="0" width="42" height="42" opacity=".65"/><rect x="100" y="0" width="42" height="42"/><rect x="150" y="0" width="42" height="42" opacity=".5"/><rect x="200" y="0" width="42" height="42" opacity=".8"/><rect x="250" y="0" width="42" height="42" opacity=".45"/>
+                </g>
+              </defs>
+              <g transform="translate(244 0)">
+              <text x="170" y="40" class="stage" data-tex="\text{ANSWER DIMENSIONS } a_r \rightarrow">ANSWER DIMENSIONS aᵣ →</text>
+              <g class="answer-token">
+                <rect x="170" y="58" width="42" height="42" opacity=".85"/><rect x="220" y="58" width="42" height="42" opacity=".4"/><rect x="270" y="58" width="42" height="42" opacity=".7"/><rect x="320" y="58" width="42" height="42" opacity=".3"/><rect x="370" y="58" width="42" height="42"/><rect x="420" y="58" width="42" height="42" opacity=".6"/>
+              </g>
+              <text x="72" y="119" class="c1">C₁</text>
+              <g class="choice-one">
+                <rect x="70" y="140" width="42" height="42"/><rect x="70" y="190" width="42" height="42" opacity=".4"/><rect x="70" y="240" width="42" height="42" opacity=".7"/><rect x="70" y="290" width="42" height="42" opacity=".3"/><rect x="70" y="340" width="42" height="42" opacity=".85"/><rect x="70" y="390" width="42" height="42" opacity=".6"/>
+              </g>
+              <text transform="translate(40 430) rotate(-90)" class="small" data-tex="\text{choice dimensions } c_{1t} \rightarrow">choice dimensions c₁ₜ →</text>
+              <g class="learned-weights">
+                <use href="#bilinear-weight-row" x="170" y="140"/>
+                <use href="#bilinear-weight-row" transform="translate(462 190) scale(-1 1)"/>
+                <use href="#bilinear-weight-row" x="170" y="240" opacity=".65"/>
+                <use href="#bilinear-weight-row" transform="translate(462 290) scale(-1 1)" opacity=".8"/>
+                <use href="#bilinear-weight-row" x="170" y="340" opacity=".85"/>
+                <use href="#bilinear-weight-row" transform="translate(462 390) scale(-1 1)"/>
+              </g>
+              </g>
+              <text x="560" y="470" class="center block-title" data-tex="\text{score} = a^\top Wc_1">score = aᵀ W c₁</text>
+              <text x="560" y="506" class="center">One learned matrix, shared by all choices.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 4 · A weight for each feature pair.</strong> A bilinear scorer can connect different answer and candidate dimensions. The displayed grid is Wᵀ: columns are answer features and rows are candidate features. Six dimensions and schematic weight shading are illustrated. The same learned matrix scores every team.</figcaption>
+        </figure>
+        <p>Now the head has something to learn even if the backbone is frozen. Diagonal weights reweight matching features; off-diagonal weights connect different features. Setting \(W = I\) recovers the dot product.</p>
+        <p>Crucially, W has \(d\times d\) weights, not one column per team. It acts on feature dimensions and is shared by all candidates. We can compute \(u = W^\top a\) once, then score every candidate with \(s = Cu\). A smaller projected width or low-rank W can reduce the cost when d is large.</p>
+        <h3 id="attention-head">Let the choices interact before scoring</h3>
+        <p>Bilinear scoring compares each candidate with the shared answer vector. A more expressive head first lets the gathered vectors exchange information through <strong>two self-attention layers</strong>, then scores the refined pairs. In our example, the head can compare Billing with the alternatives, rather than evaluating each gathered candidate vector in isolation.</p>
+        <p>This is attention over a short list of vectors, not another pass over the original text. We couls also add a learned answer-role embedding \(e_a\) to distinguish the answer row from candidate rows. An optional task vector \(t\) can condition the head on the type of decision being requested.</p>
+        <figure class="visual" id="attention-diagram">
+          <div class="figure-heading"><span class="eyebrow">WAY THREE / SELF-ATTENTION, THEN SCORE</span><span>Read from bottom to top ↑</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Attention-refined decision-head diagram; scroll horizontally on small screens">
+            <svg class="architecture-map attention-map" viewBox="0 0 1120 790" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="attention-title attention-desc">
+              <title id="attention-title">Two self-attention layers enrich the vectors before bilinear scoring</title>
+              <desc id="attention-desc">Read upward. An optional task embedding, three gathered choice vectors, and the answer vector plus an answer-role identifier enter two self-attention layers. The task embedding is selected for the requested mode: choice, null, or score. Enriched choice and answer vectors feed a shared bilinear scorer, yielding one logit per candidate. Softmax across the candidate logits gives P(C1), P(C2), and P(C3). Mixed vector colors illustrate information exchange, not literal feature values. The task output is not a candidate.</desc>
+              <defs>
+                <marker id="attention-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker>
+                <g id="attention-vector"><rect width="28" height="28" opacity=".9"/><rect y="34" width="28" height="28" opacity=".45"/><rect y="68" width="28" height="28"/></g>
+              </defs>
+              <text x="40" y="37" class="stage">04 / PROBABILITIES</text>
+              <text x="370" y="40" class="center c1" data-tex="P(C_1)">P(C₁)</text><text x="530" y="40" class="center c2" data-tex="P(C_2)">P(C₂)</text><text x="690" y="40" class="center c3" data-tex="P(C_3)">P(C₃)</text>
+              <path class="refine-edge" d="M370 76V51M530 76V51M690 76V51"/>
+              <rect class="layer" x="300" y="80" width="460" height="43" rx="5"/><text x="530" y="107" class="center">softmax across valid choices</text>
+              <path class="refine-edge" d="M370 187V128M530 187V128M690 187V128"/>
+              <text x="386" y="159" class="small c1" data-tex="s_1">s₁</text><text x="546" y="159" class="small c2" data-tex="s_2">s₂</text><text x="706" y="159" class="small c3" data-tex="s_3">s₃</text>
+              <text x="40" y="179" class="stage">03 / SCORE</text>
+              <rect class="head-block" x="120" y="191" width="820" height="67" rx="7"/>
+              <text x="530" y="218" class="center block-title">Shared bilinear scorer</text><text x="530" y="243" class="center small" data-tex="s_i = {a'}^\top Wc'_i\;\cdot\;\text{one logit per candidate}">sᵢ = a′ᵀ W c′ᵢ · one logit per candidate</text>
+              <path class="refine-edge" d="M370 302V263M530 302V263M690 302V263M850 302V263"/>
+              <g transform="translate(356 308)"><rect class="choice-two" width="28" height="28"/><rect class="answer-token" y="34" width="28" height="28"/><rect class="choice-one" y="68" width="28" height="28"/></g>
+              <g transform="translate(516 308)"><rect class="answer-token" width="28" height="28"/><rect class="choice-three" y="34" width="28" height="28"/><rect class="choice-two" y="68" width="28" height="28"/></g>
+              <g transform="translate(676 308)"><rect class="answer-token" width="28" height="28"/><rect class="choice-one" y="34" width="28" height="28"/><rect class="choice-three" y="68" width="28" height="28"/></g>
+              <g transform="translate(836 308)"><rect class="choice-three" width="28" height="28"/><rect class="choice-one" y="34" width="28" height="28"/><rect class="answer-token" y="68" width="28" height="28"/></g>
+              <text x="394" y="365" class="small c1" data-tex="c'_1">c′₁</text><text x="554" y="365" class="small c2" data-tex="c'_2">c′₂</text><text x="714" y="365" class="small c3" data-tex="c'_3">c′₃</text><text x="874" y="365" class="small answer" data-tex="a'">a′</text>
+              <text x="120" y="340" class="small">Enriched vectors</text><text x="120" y="365" class="small">after interaction</text>
+              <path class="refine-edge" d="M370 453V410M530 453V410M690 453V410M850 453V410"/>
+              <text x="40" y="442" class="stage">02 / REFINE</text>
+              <rect class="layer" x="120" y="458" width="820" height="49" rx="6"/><text x="530" y="489" class="center">Self-attention · layer 2</text>
+              <path class="refine-edge" d="M210 532V512M370 532V512M530 532V512M690 532V512M850 532V512"/>
+              <rect class="layer" x="120" y="537" width="820" height="49" rx="6"/><text x="530" y="568" class="center">Self-attention · layer 1</text>
+              <path class="refine-edge" d="M210 622V591M370 622V591M530 622V591M690 622V591M850 622V591"/>
+              <use href="#attention-vector" class="task-token" x="196" y="628"/>
+              <use href="#attention-vector" class="choice-one" x="356" y="628"/><use href="#attention-vector" class="choice-two" x="516" y="628"/><use href="#attention-vector" class="choice-three" x="676" y="628"/>
+              <use href="#attention-vector" class="answer-token" x="836" y="628"/>
+              <text x="172" y="650" class="right small">choice</text><text x="172" y="682" class="right small">noul</text><text x="172" y="714" class="right small">score</text>
+              <text x="896" y="681" class="center">+</text><rect class="role-token" x="916" y="659" width="28" height="28" rx="3"/>
+              <text x="958" y="669" class="small">identifier</text><text x="958" y="690" class="small" data-tex="e_a \in \mathbb{R}^d">eₐ ∈ ℝᵈ</text>
+              <text x="210" y="751" class="center task-label">task t</text><text x="370" y="751" class="center c1">C₁</text><text x="530" y="751" class="center c2">C₂</text><text x="690" y="751" class="center c3">C₃</text><text x="850" y="751" class="center answer">answer a</text>
+              <text x="210" y="775" class="center small">optional mode</text><text x="530" y="775" class="center small">01 / GATHERED BACKBONE VECTORS</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 5 · Refine a small set of vectors, then compare.</strong> Mixed colors suggest information exchange, not literal feature values. The optional task vector is one row selected for a mode; it is not a candidate. The answer identifier is a full-width embedding added to a.</figcaption>
+        </figure>
+        <p class="note">Rows in X are vectors, not the original text tokens. Omit t for a head without task conditioning, giving K + 1 rows. The task output t′ supplies no candidate logit. Any projection into a smaller head width must also align the task and identifier embeddings to that width.</p>
+        <p>The backbone and head now contextualize at two different scales: the backbone works over text tokens; the head works over decision evidence. Full attention in the head lets a candidate use information from every other valid row, even when the backbone is causal. Padded candidate rows must be masked so they cannot influence that exchange.</p>
+        <details><summary>Optional conditioning: task mode versus answer role</summary><div class="detail-body"><p>The source illustrates task modes named <code>choice</code>, <code>null</code>, and <code>score</code>. The task vector t is selected for a mode and enters attention as its own row. The answer-role embedding eₐ is instead added elementwise to a. These are two different signals, and neither adds a candidate logit.</p><p>This section follows only the single-choice probability path. Adding a task vector does not, by itself, define abstention or scoring behavior; those need their own output rules and training objectives.</p></div></details>
+        <h3>Turn the scores into a distribution</h3>
+        <p>Whichever head we use, its last step is the same: normalize the logits over the supplied candidates. For a single-choice decision, we return the candidate with the highest probability, along with the distribution if the application needs it.</p>
+        <div class="readout">
+          <div><span class="eyebrow">NORMALIZE ACROSS VALID CHOICES</span><div class="formula">\[p_i = \frac{\exp(s_i)}{\sum_{j=1}^{K}\exp(s_j)}\]</div><p>Return each candidate ID with its probability. For a single-choice decision, select the highest-probability candidate.</p></div>
+          <div class="probabilities" aria-label="Illustrative output probabilities">
+            <div class="prob-row"><span>Billing</span><span class="bar"><i style="width:72%;background:var(--gold)"></i></span><b>0.72</b></div>
+            <div class="prob-row"><span>Technical</span><span class="bar"><i style="width:19%;background:var(--blue)"></i></span><b>0.19</b></div>
+            <div class="prob-row"><span>Account</span><span class="bar"><i style="width:9%;background:var(--sage)"></i></span><b>0.09</b></div>
+            <p class="note">Illustrative output of a trained head, not the softmax of the earlier dot-product example.</p>
+          </div>
+        </div>
+        <p>The shared scorer is what makes the output space flexible. A request with three teams produces three logits; a request with five produces five. Unlike a fixed-label classifier with one learned output weight per class, this head scores the representations of the candidates supplied at runtime. Whether it generalizes to unfamiliar candidates still depends on the data and training.</p>
+        <p>There is one important limit to this contract: the model cannot select an answer missing from the candidate set. For support routing, the application supplies the team list. For extraction or search, a separate retrieval or candidate-generation step may be needed.</p>
+        <details class="wide-detail"><summary>Engineering notes: candidate capacity, padding, and masked softmax</summary><div class="detail-body">
+        <h3 id="choice-limits">How many choices can one request contain?</h3>
+        <p>The number of candidates <em>K</em> can vary between requests. A deployment may set a maximum <code>K_max</code> to bound request size and processing cost. Think of this as a row of <strong>choice slots</strong>, with each supplied candidate occupying one slot.</p>
+        <figure class="visual" id="choice-slots-diagram">
+          <div class="figure-heading"><span class="eyebrow">A MAXIMUM NUMBER OF CHOICES</span><span>Capacity → actual request</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Choice-slot capacity diagram; scroll horizontally on small screens">
+            <svg class="architecture-map slots-map" viewBox="0 0 1120 330" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="slots-title slots-desc">
+              <title id="slots-title">A request uses up to the supported number of choice slots</title>
+              <desc id="slots-desc">A bracket labeled maximum choices spans eight empty slots, representing an illustrative deployment capacity. Below, a request with three candidates fills the first three slots with C1, C2, and C3. Five dashed slots indicate unused capacity. The eight-slot illustration is not the screenshot's quoted 255-option API limit. A shared bilinear matrix remains d by d regardless of candidate count.</desc>
+              <text x="652" y="38" class="center stage" data-tex="\text{MAX CHOICES / } K_{\max}">MAX CHOICES / K_max</text>
+              <path class="capacity-bracket" d="M260 81V63H1044V81"/>
+              <text x="40" y="125">choice slots</text>
+              <g class="capacity-slot"><rect x="260" y="99" width="84" height="48" rx="7"/><rect x="360" y="99" width="84" height="48" rx="7"/><rect x="460" y="99" width="84" height="48" rx="7"/><rect x="560" y="99" width="84" height="48" rx="7"/><rect x="660" y="99" width="84" height="48" rx="7"/><rect x="760" y="99" width="84" height="48" rx="7"/><rect x="860" y="99" width="84" height="48" rx="7"/><rect x="960" y="99" width="84" height="48" rx="7"/></g>
+              <text x="40" y="226">this request</text><text x="40" y="250" class="small">K = 3 candidates</text>
+              <rect class="choice-one" x="260" y="200" width="84" height="48" rx="7"/><rect class="choice-two" x="360" y="200" width="84" height="48" rx="7"/><rect class="choice-three" x="460" y="200" width="84" height="48" rx="7"/>
+              <text x="302" y="230" class="center">C₁</text><text x="402" y="230" class="center">C₂</text><text x="502" y="230" class="center">C₃</text>
+              <g class="unused-slot"><rect x="560" y="200" width="84" height="48" rx="7"/><rect x="660" y="200" width="84" height="48" rx="7"/><rect x="760" y="200" width="84" height="48" rx="7"/><rect x="860" y="200" width="84" height="48" rx="7"/><rect x="960" y="200" width="84" height="48" rx="7"/></g>
+              <text x="402" y="277" class="center small">supplied candidates</text><text x="802" y="277" class="center small">unused capacity</text>
+              <text x="40" y="314" class="small">Eight slots illustrate capacity. The scorer’s shared W still has shape d × d.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 6 · Capacity is not the candidate count.</strong> This request uses three of eight illustrative slots. A deployment cap does not require allocating every slot for every request; a batch can use only the capacity it needs.</figcaption>
+        </figure>
+        <div class="two-column">
+          <article class="card"><span class="eyebrow">THE LIMIT QUOTED IN THE SCREENSHOT</span><h3>At most 255 options</h3><p>The Typesafe AI documentation excerpt shown in the screenshot states that a <code>Choice</code> question allows at most <strong>255 options</strong>. This is a product limit quoted by the supplied material, rather than a universal limit of decision models.</p><p class="note">For this blueprint, W ∈ ℝ<sup>d × d</sup> acts on vector features and is reused for every candidate. A candidate-count cap does not determine its number of columns. Context length, memory, latency, and serving policy determine practical limits.</p></article>
+          <article class="card"><span class="eyebrow">BEFORE THE DECISION MODEL</span><h3>Supply the candidate set</h3><p>The model selects among the candidates you provide. For extraction tasks, the screenshot suggests pattern matching for structured strings such as emails, phone numbers, or amounts; names may come from a known roster, a named-entity recognizer, or an LLM that proposes candidates.</p><p class="note">Candidate generation determines what the decision model can select. Evaluate whether the desired answer reaches the candidate set as well as how accurately the head ranks it.</p></article>
+        </div>
+        <div class="takeaway"><span class="eyebrow">WHEN THE CANDIDATE SET IS TOO LARGE</span><p>Narrow the decision in stages: choose a section first, then choose a span inside it, as suggested in the screenshot. For other tasks, retrieve or shortlist candidates before scoring. Keep candidate identities through each stage and evaluate the full pipeline, since early filtering can remove the correct answer.</p></div>
+        <h3 id="masked-softmax">Mask unused scores before softmax</h3>
+        <p>Suppose a fixed-capacity implementation reserves 255 slots and a request supplies 32 candidates. That leaves <strong>223 padded slots</strong>. Replace their logits with <code>−∞</code> before normalizing: they then contribute zero probability, and the probabilities of the 32 supplied candidates sum to one.</p>
+        <figure class="visual" id="masking-diagram">
+          <div class="figure-heading"><span class="eyebrow">32 SENT / 223 PADDED / 255 SLOTS</span><span>Read from top to bottom ↓</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Masked-softmax diagram; scroll horizontally on small screens">
+            <svg class="architecture-map masking-map" viewBox="0 0 1120 540" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="masking-title masking-desc">
+              <title id="masking-title">Normalize over supplied choices by masking padded logits</title>
+              <desc id="masking-desc">A 255-slot example contains 32 valid candidates and 223 padded slots. Columns show choices 1, 2, 3, an ellipsis, 32, then padded slots 33 through 255. The shared bilinear scorer computes candidate-dependent logits. Valid scores remain s1 through s32; every padded score is replaced by negative infinity. Softmax gives p1 through p32 for valid choices and zero for all padding. The valid probabilities sum to one.</desc>
+              <defs><marker id="masking-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+              <text x="652" y="32" class="center stage">MAX CHOICES = 255</text>
+              <path class="mask-bracket" d="M260 69V51H1044V69"/>
+              <rect class="padding-zone" x="752" y="81" width="300" height="393" rx="8"/>
+              <text x="40" y="124">choice slots</text>
+              <rect class="choice-one" x="260" y="98" width="84" height="48" rx="6"/><rect class="choice-two" x="360" y="98" width="84" height="48" rx="6"/><rect class="choice-three" x="460" y="98" width="84" height="48" rx="6"/><rect class="answer-token" x="560" y="98" width="84" height="48" rx="6"/><rect class="other-choice" x="660" y="98" width="84" height="48" rx="6"/>
+              <g class="masked-cell"><rect x="760" y="98" width="84" height="48" rx="6"/><rect x="860" y="98" width="84" height="48" rx="6"/><rect x="960" y="98" width="84" height="48" rx="6"/></g>
+              <text x="302" y="128" class="center">1</text><text x="402" y="128" class="center">2</text><text x="502" y="128" class="center">3</text><text x="602" y="128" class="center">…</text><text x="702" y="128" class="center">32</text><text x="802" y="128" class="center">33</text><text x="902" y="128" class="center">…</text><text x="1002" y="128" class="center">255</text>
+              <text x="502" y="174" class="center small">32 supplied candidates</text><text x="902" y="174" class="center small">223 padded slots</text>
+              <rect class="head-block" x="260" y="197" width="484" height="66" rx="6"/>
+              <text x="502" y="224" class="center" data-tex="\text{Shared scorer}\;\cdot\; s_i = a^\top Wc_i">Shared scorer · sᵢ = aᵀWcᵢ</text><text x="502" y="248" class="center small" data-tex="W \in \mathbb{R}^{d\times d}\;\cdot\;\text{reuse for each candidate}">W ∈ ℝᵈˣᵈ · reuse for each candidate</text>
+              <text x="902" y="227" class="center small">Replace padded logits</text><text x="902" y="251" class="center small" data-tex="\text{with } -\infty">with −∞</text>
+              <path class="mask-edge" d="M502 268V297M902 268V297"/>
+              <text x="40" y="332">masked scores</text>
+              <g class="score-cell"><rect x="260" y="309" width="84" height="42" rx="4"/><rect x="360" y="309" width="84" height="42" rx="4"/><rect x="460" y="309" width="84" height="42" rx="4"/><rect x="560" y="309" width="84" height="42" rx="4"/><rect x="660" y="309" width="84" height="42" rx="4"/></g>
+              <g class="masked-cell"><rect x="760" y="309" width="84" height="42" rx="4"/><rect x="860" y="309" width="84" height="42" rx="4"/><rect x="960" y="309" width="84" height="42" rx="4"/></g>
+              <text x="302" y="336" class="center" data-tex="s_1">s₁</text><text x="402" y="336" class="center" data-tex="s_2">s₂</text><text x="502" y="336" class="center" data-tex="s_3">s₃</text><text x="602" y="336" class="center" data-tex="\ldots">…</text><text x="702" y="336" class="center" data-tex="s_{32}">s₃₂</text><text x="802" y="336" class="center masked-label" data-tex="-\infty">−∞</text><text x="902" y="336" class="center masked-label" data-tex="-\infty">−∞</text><text x="1002" y="336" class="center masked-label" data-tex="-\infty">−∞</text>
+              <path class="mask-edge" d="M502 359V403M902 359V403"/><text x="526" y="387" class="small">softmax</text><text x="926" y="387" class="small" data-tex="\exp(-\infty) = 0">exp(−∞) = 0</text>
+              <text x="40" y="440">probabilities</text>
+              <text x="302" y="440" class="center c1" data-tex="p_1">p₁</text><text x="402" y="440" class="center c2" data-tex="p_2">p₂</text><text x="502" y="440" class="center c3" data-tex="p_3">p₃</text><text x="602" y="440" class="center" data-tex="\ldots">…</text><text x="702" y="440" class="center" data-tex="p_{32}">p₃₂</text><text x="802" y="440" class="center masked-label">0</text><text x="902" y="440" class="center masked-label">0</text><text x="1002" y="440" class="center masked-label">0</text>
+              <text x="502" y="503" class="center small" data-tex="\sum_{i=1}^{32}p_i = 1">Σᵢ₌₁³² pᵢ = 1</text><text x="902" y="503" class="center small">zero mass on padding</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 7 · Padding must receive no probability mass.</strong> A 255-slot example is abbreviated with ellipses. Only the 32 supplied candidates contribute to the softmax denominator. The scorer’s W acts on features, not candidate slots.</figcaption>
+        </figure>
+        <div class="formula">\[\begin{aligned}
+          \tilde{s}_i &amp;= \begin{cases}
+            s_i &amp; \text{if candidate } i \text{ is valid}, \\
+            -\infty &amp; \text{otherwise}
+          \end{cases} \\
+          p_i &amp;= \frac{\exp(\tilde{s}_i)}{\sum_j \exp(\tilde{s}_j)},\qquad \sum_{i\,\text{valid}}p_i = 1
+        \end{aligned}\]</div>
+        <div class="two-column">
+          <article class="card"><span class="eyebrow">A COMPLETE NUMERICAL EXAMPLE</span><h3>Five valid choices, then padding</h3><p>To make the screenshot’s visible scores fully calculable, consider a separate request with exactly five valid candidates:</p>
+            <div class="formula">\[s = \begin{bmatrix}2.1 \\ 0.4 \\ -0.3 \\ 1.2 \\ -1.0\end{bmatrix},\qquad
+              p \approx \begin{bmatrix}0.5797 \\ 0.1059 \\ 0.0526 \\ 0.2357 \\ 0.0261\end{bmatrix}\]</div>
+            <p>Any padded slots receive \(-\infty\) logits and zero probability. The five probabilities sum to one, up to rounding.</p><p class="note">The source displays 32 choices with omitted scores, so its five displayed probabilities cannot specify that full distribution. Here all five valid scores are explicit.</p></article>
+          <article class="card"><span class="eyebrow">MASK AT THE RIGHT STAGE</span><h3>Exclude padding from normalization</h3><p>A zero logit still contributes <code>exp(0) = 1</code> to the denominator. Setting padded logits to −∞ removes that contribution. Zeroing probabilities only after softmax would leave the valid probabilities summing to less than one unless renormalized.</p><p class="note">Use a numerically stable softmax and require at least one valid candidate per example. Mask padded candidates in the refinement attention too, so they cannot influence valid representations before scoring.</p></article>
+        </div>
+        </div></details>
+      </section>
+
+      <section id="order" class="chapter-section">
+        <p class="kicker">04 / Make choice order irrelevant</p>
+        <h2>Should moving Billing change the answer?</h2>
+        <p>Intuitively, listing Billing first or last should not change how well it fits a duplicate-charge request. But our packed sequence does not guarantee this. Moving a candidate changes its position and, in a causal backbone, which other candidates precede it.</p>
+        <div class="takeaway"><span class="eyebrow">THE DESIRED PROPERTY</span><p>Reordering candidates should reorder the probability vector in exactly the same way. After matching by candidate identity, the probabilities should stay the same. This is <strong>permutation equivariance</strong> of the candidate outputs.</p></div>
+        <p>A shared scorer and position-free self-attention over candidate vectors can be permutation-equivariant <em>given the same candidate representations</em>. The packed backbone may already have introduced order effects, so the head alone cannot guarantee the property for the full model.</p>
+        <p>The <a href="../slides/transcript2.txt">second transcript</a> develops a structural solution for a full-attention causal backbone: give every candidate the same positional starting point, and prevent candidates from reading one another inside the backbone. The final answer suffix can still read the whole problem. Here the shared prefix includes <strong>question + state + prompt</strong>, extending the transcript’s shorthand “question” to our packed input.</p>
+        <h3 id="reset-positions">First, give each choice its own local positions</h3>
+        <p>With ordinary positions, a choice’s position IDs depend on the lengths of all preceding choices. Moving Billing from first to last changes both its physical location and its positional signal. Instead, keep the prefix positions and restart each choice at the first position after that prefix. Preserve the order of tokens <em>within</em> each choice.</p>
+        <figure class="visual" id="position-reset-diagram">
+          <div class="figure-heading"><span class="eyebrow">Reset the counter at every choice</span><span>Suffix after the longest choice</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Choice position reset diagram; scroll horizontally on small screens">
+            <svg class="architecture-map position-map" viewBox="0 0 1120 480" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="positions-title positions-desc">
+              <title id="positions-title">Reset each candidate to the same starting position</title>
+              <desc id="positions-desc">The shared prefix contains the question, duplicate-charge message, and prompt, shown as seven schematic tokens at positions zero through six. Every choice restarts at seven: Billing has four squares at positions seven through ten, Technical support has seven at positions seven through thirteen, and Account access has five at positions seven through eleven. These illustrative lengths reflect relative label length, not measured tokenization. A dashed boundary after Technical support, the longest choice, marks where the answer suffix begins, at fourteen and fifteen. These rows align position IDs; the input remains a single packed sequence.</desc>
+              <text x="40" y="35" class="stage">EVERY CHOICE STARTS AT 7 · ANSWER SUFFIX STARTS AT 14</text>
+              <text x="405" y="86" class="c1">Billing</text>
+              <g class="choice-one"><rect x="405" y="103" width="44" height="44"/><rect x="455" y="103" width="44" height="44"/><rect x="505" y="103" width="44" height="44"/><rect x="555" y="103" width="44" height="44"/></g>
+              <g class="center small"><text x="427" y="173">7</text><text x="477" y="173">8</text><text x="527" y="173">9</text><text x="577" y="173">10</text></g>
+              <text x="40" y="216">question + state + prompt</text>
+              <g class="neutral-token"><rect x="40" y="233" width="44" height="44"/><rect x="90" y="233" width="44" height="44"/><rect x="140" y="233" width="44" height="44"/><rect x="190" y="233" width="44" height="44"/><rect x="240" y="233" width="44" height="44"/><rect x="290" y="233" width="44" height="44"/><rect x="340" y="233" width="44" height="44"/></g>
+              <g class="center small"><text x="62" y="303">0</text><text x="112" y="303">1</text><text x="162" y="303">2</text><text x="212" y="303">3</text><text x="262" y="303">4</text><text x="312" y="303">5</text><text x="362" y="303">6</text></g>
+              <text x="405" y="216" class="c2">Technical support</text>
+              <g class="choice-two"><rect x="405" y="233" width="44" height="44"/><rect x="455" y="233" width="44" height="44"/><rect x="505" y="233" width="44" height="44"/><rect x="555" y="233" width="44" height="44"/><rect x="605" y="233" width="44" height="44"/><rect x="655" y="233" width="44" height="44"/><rect x="705" y="233" width="44" height="44"/></g>
+              <g class="center small"><text x="427" y="303">7</text><text x="477" y="303">8</text><text x="527" y="303">9</text><text x="577" y="303">10</text><text x="627" y="303">11</text><text x="677" y="303">12</text><text x="727" y="303">13</text></g>
+              <text x="405" y="346" class="c3">Account access</text>
+              <g class="choice-three"><rect x="405" y="363" width="44" height="44"/><rect x="455" y="363" width="44" height="44"/><rect x="505" y="363" width="44" height="44"/><rect x="555" y="363" width="44" height="44"/><rect x="605" y="363" width="44" height="44"/></g>
+              <g class="center small"><text x="427" y="433">7</text><text x="477" y="433">8</text><text x="527" y="433">9</text><text x="577" y="433">10</text><text x="627" y="433">11</text></g>
+              <path class="longest-boundary" d="M766 92V438"/>
+              <text x="786" y="86" class="small">after the longest choice</text>
+              <text x="786" y="216" class="answer">the answer is:</text>
+              <g class="answer-token"><rect x="786" y="233" width="44" height="44"/><rect x="836" y="233" width="44" height="44"/></g>
+              <text x="808" y="303" class="center small">14</text><text x="858" y="303" class="center small">15</text>
+              <text x="786" y="369" class="small">Same IDs wherever a</text><text x="786" y="395" class="small">choice appears in the list.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 8 · Move the choice, keep its positional signal.</strong> Adapted from the 16:22:39 screenshot using our support-team choices. Billing has four squares, Technical support seven, and Account access five, roughly reflecting their relative label lengths. Rows align positional coordinates; the choices are still packed into one sequence. Each starts immediately after the shared prefix in position-ID space, and the suffix starts after the longest choice. The blocks do not represent measured tokenization of the prefix or team descriptions.</figcaption>
+        </figure>
+        <div class="formula">\[\begin{aligned}
+          \operatorname{pos}(P_r)&amp;=r,\\
+          \operatorname{pos}(C_{i,r})&amp;=L_P+r,\\
+          \operatorname{pos}(A_r)&amp;=L_P+\max_i L_i+r.
+        \end{aligned}\]</div>
+        <p>Here P is the shared prefix, A is the fixed answer suffix, Lᵢ is the length of a complete choice block, and r is a zero-based offset inside a block. In this schematic example, Technical support is the <strong>longest choice</strong>: 7 prefix tokens + max(4, 7, 5) choice tokens = position 14. The suffix’s second token uses position 15. Moving Billing to the end of the list keeps its IDs at 7–10 and the suffix at 14–15, because the maximum length stays the same. Continuing from whichever choice happens to be last would lose that property.</p>
+        <aside class="reading-note"><p><strong>Position IDs are not always added embeddings.</strong> Learned absolute encodings can be added to token vectors. RoPE instead uses positions to rotate attention queries and keys. The reset rule concerns the positional signal supplied to the backbone; it does not change the physical token indices used to gather endpoints or build the mask.</p></aside>
+        <h3 id="block-attention">Then, give every choice the same access to context</h3>
+        <p>Resetting positions alone leaves a second asymmetry. Ordinary causal attention lets a later candidate read earlier candidates. In our running order, Billing reads the shared prefix and its own tokens; Technical support can also read Billing; Account access can read both earlier choices. Their available context depends on where they sit in the list.</p>
+        <figure class="visual" id="causal-order-diagram">
+          <div class="figure-heading"><span class="eyebrow">Ordinary causal attention / unequal context</span><span>Rows read columns</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Ordinary causal attention and choice-order effects; scroll horizontally on small screens">
+            <svg class="architecture-map causal-order-map" viewBox="0 0 1120 490" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="causal-order-title causal-order-desc">
+              <title id="causal-order-title">Later choices can read earlier choices under ordinary causal attention</title>
+              <desc id="causal-order-desc">A four-block matrix has rows and columns shared prefix P, Billing C1, Technical support C2, and Account access C3. All blocks below the diagonal are allowed; diagonal blocks are internally causal. Billing sees the prefix and itself. Technical support also sees Billing. Account access also sees Billing and Technical support. Colored vector strips schematically illustrate possible influence from earlier candidates, not literal feature partitions or measured attention weights. The answer suffix is omitted.</desc>
+              <defs>
+                <pattern id="causal-order-grid" width="64" height="64" patternUnits="userSpaceOnUse"><rect width="64" height="64" fill="none" stroke="#faf9f3" stroke-width="3"/></pattern>
+                <pattern id="causal-order-future" width="16" height="16" patternUnits="userSpaceOnUse"><rect width="16" height="16" fill="#f1ede3"/><path d="M5 5L11 11M11 5L5 11" stroke="#b47867" stroke-width="1.2"/></pattern>
+              </defs>
+              <text x="278" y="36" class="center stage">KEYS / VISIBLE BLOCKS →</text>
+              <text x="182" y="79" class="center">P</text><text x="246" y="79" class="center c1">C₁</text><text x="310" y="79" class="center c2">C₂</text><text x="374" y="79" class="center c3">C₃</text>
+              <text x="134" y="137" class="right small">prefix</text><text x="134" y="201" class="right c1">C₁</text><text x="134" y="265" class="right c2">C₂</text><text x="134" y="329" class="right c3">C₃</text>
+              <g transform="translate(150 100)">
+                <rect width="256" height="256" fill="url(#causal-order-future)"/>
+                <g class="neutral-token"><path d="M0 0V64H64Z"/></g>
+                <g class="choice-one"><rect y="64" width="64" height="64"/><path d="M64 64V128H128Z"/></g>
+                <g class="choice-two"><rect y="128" width="128" height="64"/><path d="M128 128V192H192Z"/></g>
+                <g class="choice-three"><rect y="192" width="192" height="64"/><path d="M192 192V256H256Z"/></g>
+                <rect width="256" height="256" fill="url(#causal-order-grid)"/>
+              </g>
+              <text x="150" y="385" class="small">QUERY ROW ↓</text>
+              <text x="480" y="36" class="stage">CONTEXT OUTSIDE EACH CHOICE</text>
+              <text x="480" y="70" class="c1">C₁ · Billing</text>
+              <rect class="neutral-token" x="630" y="80" width="160" height="38" rx="5"/><text x="710" y="105" class="center small">shared prefix</text>
+              <text x="480" y="153" class="small">vector</text>
+              <g class="choice-one"><rect x="630" y="131" width="28" height="28"/><rect x="664" y="131" width="28" height="28"/><rect x="698" y="131" width="28" height="28"/><rect x="732" y="131" width="28" height="28"/></g>
+              <text x="480" y="180" class="c2">C₂ · Technical support</text>
+              <rect class="neutral-token" x="630" y="190" width="160" height="38" rx="5"/><text x="710" y="215" class="center small">shared prefix</text>
+              <rect class="choice-one" x="800" y="190" width="145" height="38" rx="5"/><text x="872" y="215" class="center small">Billing</text>
+              <text x="480" y="263" class="small">vector</text>
+              <g class="choice-two"><rect x="630" y="241" width="28" height="28"/><rect x="664" y="241" width="28" height="28"/><rect x="698" y="241" width="28" height="28"/></g><rect class="choice-one" x="732" y="241" width="28" height="28"/>
+              <text x="480" y="290" class="c3">C₃ · Account access</text>
+              <rect class="neutral-token" x="630" y="300" width="160" height="38" rx="5"/><text x="710" y="325" class="center small">shared prefix</text>
+              <rect class="choice-one" x="800" y="300" width="145" height="38" rx="5"/><text x="872" y="325" class="center small">Billing</text>
+              <rect class="choice-two" x="955" y="300" width="125" height="38" rx="5"/><text x="1017" y="316" class="center small">Technical</text><text x="1017" y="332" class="center small">support</text>
+              <text x="480" y="373" class="small">vector</text>
+              <g class="choice-three"><rect x="630" y="351" width="28" height="28"/><rect x="664" y="351" width="28" height="28"/></g><rect class="choice-one" x="698" y="351" width="28" height="28"/><rect class="choice-two" x="732" y="351" width="28" height="28"/>
+              <text x="480" y="411" class="small">Each choice also reads its own causal history.</text>
+              <text x="40" y="464" class="small">Colors = querying block · × = future context blocked · vector colors = possible contextual influence</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 9 · The same causal rule gives choices different context.</strong> Adapted from the 16:23:00 screenshot using Billing (C₁), Technical support (C₂), and Account access (C₃). P is the shared question, state, and prompt. Each matrix square represents a token block; diagonal triangles make within-block causality explicit. Row colors and blocked-context crosses match Figure 10’s visual language, but the repeated crosses here are a pattern, not individual token cells. The four-cell vectors are schematic, not measured feature partitions or attention weights. The suffix is omitted to focus on the candidate asymmetry.</figcaption>
+        </figure>
+        <p>For example, moving Technical support before Billing removes its access to Billing and gives Billing access to Technical support instead. Even with reset position IDs, this changes the information available to their hidden states. Positional resets alone therefore cannot guarantee choice-order equivariance.</p>
+        <p>To remove that asymmetry, treat attention as a directed visibility graph and remove the cross-choice edges: prefix tokens read their own past; each choice reads the entire prefix and its own past; suffix tokens read the prefix, all choices, and their own past. “Past” includes the current token in each causal block.</p>
+        <figure class="visual" id="block-mask-diagram">
+          <div class="figure-heading"><span class="eyebrow">Block the cross-choice paths</span><span>Token-level comparison · rows read columns</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Block-causal attention mask; scroll horizontally on small screens">
+            <svg class="architecture-map block-mask-map" viewBox="0 0 1120 620" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="block-mask-title block-mask-desc">
+              <title id="block-mask-title">Candidate-isolated causal attention with a shared answer readout</title>
+              <desc id="block-mask-desc">Two 12 by 12 token masks compare ordinary causal attention with candidate-isolated attention. Both use block lengths Q equals 3, C1 equals 2, C2 equals 3, C3 equals 2, and answer suffix A equals 2. Filled cells permit attention, crosses block future tokens, and blank cells on the right remove cross-choice access. The modified mask removes C2 reading C1 and C3 reading C1 or C2: 16 connections. Both preserve self-attention, within-choice causal history, the shared prefix, and suffix access to all choices.</desc>
+              <defs>
+                <pattern id="block-mask-grid" width="30" height="30" patternUnits="userSpaceOnUse"><rect width="30" height="30" fill="none" stroke="#faf9f3" stroke-width="3"/></pattern>
+                <pattern id="block-mask-future" width="30" height="30" patternUnits="userSpaceOnUse"><rect width="30" height="30" fill="#f1ede3"/><path d="M9 9L21 21M21 9L9 21" stroke="#b47867" stroke-width="1.5"/></pattern>
+                <g id="block-mask-causal-cells">
+                  <g class="neutral-token"><rect width="30" height="30"/><rect y="30" width="60" height="30"/><rect y="60" width="90" height="30"/></g>
+                  <g class="choice-one"><rect y="90" width="120" height="30"/><rect y="120" width="150" height="30"/></g>
+                  <g class="choice-two"><rect y="150" width="180" height="30"/><rect y="180" width="210" height="30"/><rect y="210" width="240" height="30"/></g>
+                  <g class="choice-three"><rect y="240" width="270" height="30"/><rect y="270" width="300" height="30"/></g>
+                  <g class="answer-token"><rect y="300" width="330" height="30"/><rect y="330" width="360" height="30"/></g>
+                </g>
+                <g id="block-mask-labels">
+                  <text x="45" y="-27" class="center">Q</text><text x="120" y="-27" class="center c1">C1</text><text x="195" y="-27" class="center c2">C2</text><text x="270" y="-27" class="center c3">C3</text><text x="330" y="-27" class="center answer">A</text>
+                  <text x="-24" y="51" class="right">Q</text><text x="-24" y="126" class="right c1">C1</text><text x="-24" y="201" class="right c2">C2</text><text x="-24" y="276" class="right c3">C3</text><text x="-24" y="336" class="right answer">A</text>
+                  <rect class="neutral-token" y="-14" width="90" height="7"/><rect class="choice-one" x="90" y="-14" width="60" height="7"/><rect class="choice-two" x="150" y="-14" width="90" height="7"/><rect class="choice-three" x="240" y="-14" width="60" height="7"/><rect class="answer-token" x="300" y="-14" width="60" height="7"/>
+                </g>
+              </defs>
+              <text x="280" y="35" class="center stage">ORDINARY CAUSAL MASK</text>
+              <text x="840" y="35" class="center stage">CANDIDATE-ISOLATED MASK</text>
+              <g transform="translate(100 108)">
+                <use href="#block-mask-labels"/>
+                <rect width="360" height="360" fill="url(#block-mask-future)"/>
+                <use href="#block-mask-causal-cells"/>
+                <rect width="360" height="360" fill="url(#block-mask-grid)"/>
+              </g>
+              <g transform="translate(660 108)">
+                <use href="#block-mask-labels"/>
+                <rect width="360" height="360" fill="url(#block-mask-future)"/>
+                <use href="#block-mask-causal-cells"/>
+                <g class="removed-connections"><rect x="90" y="150" width="60" height="90"/><rect x="90" y="240" width="150" height="60"/></g>
+                <rect width="360" height="360" fill="url(#block-mask-grid)"/>
+              </g>
+              <text x="280" y="503" class="center small">Earlier choices are visible to later choices.</text>
+              <text x="840" y="503" class="center small">Blank cells remove cross-choice access.</text>
+              <text x="560" y="541" class="center stage">BOTH LOOK BACKWARD, INCLUDING THE CURRENT TOKEN</text>
+              <text x="40" y="578" class="small">Filled = allowed · × = future token blocked · blank = earlier choice blocked</text>
+              <text x="40" y="603" class="small">Q = shared prefix · A = answer suffix · each cell is one query–key token pair</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 10 · A causal mask with selected edges removed.</strong> Adapted from the 16:23:15 screenshot, with its schematic block lengths (3, 2, 3, 2, 2). Colors identify the querying block, not attention strength. Both masks block every future token. The right mask additionally blocks earlier choices while retaining the prefix, each choice’s own causal history, and the suffix’s access to every candidate.</figcaption>
+        </figure>
+        <p>Read the removed regions by row: C₂ loses access to C₁; C₃ loses access to C₁ and C₂. C₁ already had no earlier choices to read. The two suffix rows remain causal: the first suffix token sees all candidates and itself, while the second also sees the first suffix token. Every retained connection stays on or below the physical token diagonal, even though the position IDs restart for each choice.</p>
+        <h3>Why the full decision can now be equivariant</h3>
+        <p>With unchanged candidate tokenization, local positions, and this mask at every backbone layer, each choice reads the same prefix and its own content in every ordering. Its hidden states therefore follow its identity through the permutation. The suffix has unchanged positions and attends to the same collection of keys and values; permuting that collection together leaves its attention result unchanged in exact arithmetic.</p>
+        <p>The head must preserve this symmetry too. Use shared scoring weights and refinement attention without candidate-rank embeddings or order-dependent masks. A fixed answer-role embedding and a task embedding independent of choice order are compatible. Candidate interactions can then happen in the symmetric head even though the backbone isolated the choice blocks.</p>
+        <div class="formula">\[C(\pi x)=\Pi C(x),\qquad a(\pi x)=a(x),\qquad p(\pi x)=\Pi p(x).\]</div>
+        <p>Here \(\pi x\) permutes whole candidate blocks and \(\Pi\) applies the same permutation to candidate rows. This is a structural property under those assumptions, rather than something established by shuffled training data. In evaluation mode, allow small numerical differences from floating-point reductions. Exact score ties also need an order-independent tie-breaking rule if the returned candidate identity must be stable.</p>
+        <details><summary>When the construction applies</summary><div class="detail-body"><p><strong>Full-attention causal backbones:</strong> the custom mask removes edges from ordinary causal attention. It retains backward-only visibility but changes the context and positional distribution, so fine-tune and evaluate the adapted architecture.</p><p><strong>Bidirectional backbones:</strong> fully connected attention already treats candidate permutations symmetrically if positions, formatting, and all other biases also transform consistently. Resetting candidate positions addresses the positional part; a sliding window or order-dependent bias introduces additional constraints.</p><p><strong>Hybrid, sparse, or recurrent attention:</strong> a custom dense mask may not control every information path. Window boundaries and recurrent state can still leak physical order. Check the actual layer implementation; the concrete hybrid backbone in Part II needs separate analysis before claiming this guarantee.</p><p><strong>Ordered tasks:</strong> preserve order within each choice and within the state. This construction targets unordered alternative sets, including yes/no alternatives. If rank or sequence is part of a task’s meaning, retain that semantic information explicitly rather than erasing it indiscriminately.</p></div></details>
+        <h3 id="ordered-scores">For a score, preserve the scale’s meaning</h3>
+        <p>The construction above targets unordered alternatives. A <strong>rating scale has semantic order</strong>: “terrible” is below “bad,” and “good” is below “great.” The source’s review example makes this distinction concrete. When the supplied list defines the scale from low to high, shuffling it changes the task’s definition.</p>
+        <figure class="visual">
+          <div class="figure-heading"><span class="eyebrow">Ordered levels carry meaning</span><span>A score-task boundary</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Ordered rating scale and shuffled-level comparison">
+            <svg class="architecture-map rating-scale-map" viewBox="0 0 1060 460" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="rating-scale-title rating-scale-desc">
+              <title id="rating-scale-title">A five-level review scale runs from worse to better</title>
+              <desc id="rating-scale-desc">Rate this review from 1 to 5: The food was cold, but the staff were lovely. The ordered levels are 1 terrible, 2 bad, 3 okay, 4 good, and 5 great, with an arrow from worse to better. A crossed-out row shows the source’s shuffled order: 4 good, 1 terrible, 5 great, 3 okay, 2 bad. That row is not an ascending scale. The numbers still identify the original ratings if they remain attached to their labels; shuffling must not redefine their values by list slot. No predicted rating is shown.</desc>
+              <defs><marker id="rating-scale-arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M 0 0 L 10 5 L 0 10 z" fill="#527d70"/></marker></defs>
+              <text x="40" y="40" class="stage">A SCORE QUESTION</text>
+              <text x="40" y="82" class="block-title">Rate this review from 1 to 5:</text>
+              <text x="40" y="120">“The food was cold, but the staff were lovely.”</text>
+              <g class="rating-ordered">
+                <rect class="rating-one" x="40" y="162" width="180" height="54" rx="6"/><text x="130" y="195" class="center">1 · terrible</text>
+                <rect class="rating-two" x="240" y="162" width="180" height="54" rx="6"/><text x="330" y="195" class="center">2 · bad</text>
+                <rect class="rating-three" x="440" y="162" width="180" height="54" rx="6"/><text x="530" y="195" class="center">3 · okay</text>
+                <rect class="rating-four" x="640" y="162" width="180" height="54" rx="6"/><text x="730" y="195" class="center">4 · good</text>
+                <rect class="rating-five" x="840" y="162" width="180" height="54" rx="6"/><text x="930" y="195" class="center">5 · great</text>
+              </g>
+              <path class="scale-direction" d="M 40 249 H 1018"/>
+              <text x="40" y="275" class="small">worse</text><text x="1020" y="275" class="right small">better</text>
+              <g class="rating-shuffled">
+                <rect class="rating-four" x="40" y="316" width="180" height="54" rx="6"/><text x="130" y="349" class="center">4 · good</text>
+                <rect class="rating-one" x="240" y="316" width="180" height="54" rx="6"/><text x="330" y="349" class="center">1 · terrible</text>
+                <rect class="rating-five" x="440" y="316" width="180" height="54" rx="6"/><text x="530" y="349" class="center">5 · great</text>
+                <rect class="rating-three" x="640" y="316" width="180" height="54" rx="6"/><text x="730" y="349" class="center">3 · okay</text>
+                <rect class="rating-two" x="840" y="316" width="180" height="54" rx="6"/><text x="930" y="349" class="center">2 · bad</text>
+              </g>
+              <path class="scale-crossout" d="M 30 302 L 1030 384 M 30 384 L 1030 302"/>
+              <text x="530" y="421" class="center">Shuffled: no longer a worse-to-better scale.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 11 · Remove arbitrary list order, preserve semantic rank.</strong> Adapted from the 16:23:37 screenshot, retaining its review, five levels, and shuffled row. Colors follow rating identity from worse to better. The cross rejects the shuffled row as an ascending scale; it does not erase the explicit numbers attached to the labels. No model prediction is implied.</figcaption>
+        </figure>
+        <p>There are two distinct contracts. If <strong>list position defines the numeric value</strong>, keep the levels in their declared order. If each candidate instead carries an <strong>explicit, stable value</strong> \(v_i\), a permutation-equivariant model can move the value and its probability together and preserve the expected rating:</p>
+        <div class="formula">\[\hat r = \sum_i v_i p_i,\qquad \sum_i (\Pi v)_i (\Pi p)_i = \sum_i v_i p_i.\]</div>
+        <p>This requires preserving the value–label mapping through packing and readout; it does not follow from resetting positions alone. The source’s 1–5 scale also assumes a numeric spacing when summarized by an expectation. Ordinal labels by themselves specify rank, not equal distances between levels.</p>
+        <aside class="reading-note"><p><strong>The TypeSafe Score contract</strong> The <a href="https://docs.typesafe.ai/primitives/score">TypeSafe API</a> defines each level’s numeric value as its position in the supplied <code>criteria</code> array, starting at zero. Reordering urgency levels therefore reassigns their numeric meaning, even if their probabilities could otherwise be remapped by identity. Clef-Flash’s <a href="#typed-readout"><code>score</code> readout</a> follows this convention; it is an API contract, not a requirement of the joint schema head.</p></aside>
+        <h3>The model chooses within the world we give it</h3>
+        <p>Two other boundaries are worth keeping in view. If Billing is absent, this single-choice head still distributes probability over the remaining teams; it has no built-in “none of the above.” And even when Billing is present, 0.72 is a model output, not a guarantee of correctness. Candidate coverage, an explicit abstention policy where needed, and confidence evaluation are parts of the system design.</p>
+        <div class="takeaway"><span class="eyebrow">The idea to carry forward</span><p>A decision model reuses an LLM’s language representations, then learns a different readout: compare the available choices instead of continuing the text.</p></div>
+      </section>
+
+      <section id="training" class="chapter-section">
+        <p class="kicker">05 / Train for decisions</p>
+        <h2>Teach the readout what “correct” means</h2>
+        <p>The architecture tells us where the scores come from. Training tells it which scores should be high. Each record contains <code>(state, question, candidates, y)</code>, with one correct candidate index. We minimize cross-entropy over the candidate logits:</p>
+        <div class="formula">\[\mathcal{L} = -\log p_y = -s_y + \log\sum_{j=1}^{K}\exp(s_j)\]</div>
+        <p>For the duplicate-charge request, y points to Billing. If the head assigned Billing the illustrative probability 0.72, the loss would be about 0.329. The objective favors assigning more probability to Billing relative to the distractors. Across many labeled requests, this teaches a decision rule rather than a text-completion format.</p>
+        <p>A useful baseline is to freeze the backbone and train a newly initialized bilinear or attention-refined head. That tests how much the existing representations already support the task. If they need to adapt, train adapters or fine-tune the backbone alongside the head. Gradients flow only through the components we choose to update.</p>
+        <p>The candidate sets matter as much as the labels. Easy distractors can make the task look solved while teaching little about ambiguous requests. Evaluate on held-out examples with plausible alternatives, different candidate counts, and shuffled orders. Measure accuracy and log loss, but also calibration and end-to-end latency: a normalized probability vector is not automatically reliable confidence.</p>
+        <p>We now have the building blocks: a packed decision, selected hidden states, a shared scorer, and a supervised objective. But the blueprint is a starting point, not a claim that every decision model uses these exact components. Next, we will follow a concrete implementation that keeps the same output contract while making the readout substantially richer.</p>
+      </section>
+
+      <section id="clef" class="chapter-section part-opening">
+        <p class="kicker">Part II / Inside Clef-Flash</p>
+        <h2>What if a few gathered vectors are not enough?</h2>
+        <p class="lead">Clef-Flash does not just compare candidate endpoints. It keeps token-level evidence available to the head, lets each option read that evidence, and lets several questions about the same state interact before returning their answers.</p>
+        <p>In the first part, the head received a deliberately small bottleneck: one vector per candidate and one answer vector. Once those were gathered, the head could refine them, but it could not go back to the rest of the sequence. A longer customer message might contain several separate facts, with different facts relevant to different decisions.</p>
+        <p>Clef-Flash addresses this with a <strong>joint schema head</strong>. Its request is a state plus a schema of questions, not just a single candidate list. Its backbone still runs once, and its outputs are still probabilities over allowed options. What changes is how the head extracts and combines the evidence.</p>
+        <div class="example-card schema-example">
+          <span class="eyebrow">One state / three decisions</span>
+          <div class="schema-state">
+            <span class="schema-label">Shared state · customer message</span>
+            <blockquote>“I was charged twice for my subscription. I can still log in, but I need the extra charge reversed.”</blockquote>
+          </div>
+          <div class="schema-connection"><span aria-hidden="true">↓</span> Same evidence, three questions</div>
+          <div class="schema-decisions">
+            <section class="schema-decision" aria-labelledby="example-team">
+              <div class="schema-card-heading"><h3 id="example-team">Team</h3><span class="schema-type">choice</span></div>
+              <p>Which team should handle this request?</p>
+              <ul class="schema-options" aria-label="Allowed team options"><li class="team-billing">Billing</li><li class="team-technical">Technical support</li><li class="team-account">Account access</li></ul>
+            </section>
+            <section class="schema-decision" aria-labelledby="example-refund">
+              <div class="schema-card-heading"><h3 id="example-refund">Refund</h3><span class="schema-type">noul · boolean</span></div>
+              <p>Is the customer asking for a refund?</p>
+              <ul class="schema-options" aria-label="Allowed refund options"><li>True</li><li>False</li></ul>
+            </section>
+            <section class="schema-decision" aria-labelledby="example-urgency">
+              <div class="schema-card-heading"><h3 id="example-urgency">Urgency</h3><span class="schema-type">score</span></div>
+              <p>How urgent is the request?</p>
+              <ol class="schema-options schema-levels" start="0" aria-label="Ordered urgency levels"><li><b>0</b> Routine</li><li><b>1</b> Soon</li><li><b>2</b> Immediate</li></ol>
+            </section>
+          </div>
+          <p class="note">Illustrative schema. In the API, each question has an ID, a type, instructions, and criteria defining its allowed options.</p>
+        </div>
+        <p>The added sentence about login access is relevant to the routing decision; the request to reverse the extra charge is relevant to the refund question. Urgency may require considering the whole message. These are different decisions over shared evidence, which motivates keeping that evidence accessible rather than squeezing it into a single answer vector.</p>
+       
+        <p>This section follows the local <a href="../joint_schema_model.py">joint_schema_model.py</a>, <a href="../joint_head_config.json">joint_head_config.json</a>, and <a href="../config.json">config.json</a>, distributed with the <a href="https://huggingface.co/Cloudflare/clef-flash">Clef-Flash release</a>. We will use \(i\) for a question, \(j\) for an option within that question, \(Q\) for the number of questions, and \(O=\sum_i K_i\) for the total number of options. Backbone vectors have width \(d=4096\); the head projects most computation to \(D=1024\).</p>
+        <h3>Qwen3.5 under the hood</h3>
+        <p>The release uses Qwen3.5-9B. Its configured text stack has 32 layers: three linear-attention blocks followed by one full-attention block, repeated eight times. That is a hybrid causal backbone, not the generic full-attention transformer drawn in Part I. We still take its final hidden states rather than generate an answer.</p>
+        <aside class="reading-note"><p><strong>Consistent order is not structural equivariance.</strong> Unlike <a href="#order">Part I’s structural equivariance construction</a>, this implementation canonicalizes <code>choice</code> options by sorting their string IDs before packing. This removes variation from caller-supplied choice-key order, but does not eliminate the backbone’s underlying order sensitivity. Schema fields retain their supplied order, as do <code>score</code> levels, whose positions define their numeric meaning.</p></aside>
+        <h3>From comparing summaries to sharing evidence</h3>
+        <p>In Part I, the backbone reads the whole input, but the head receives only a small set of summaries: one vector per candidate and one answer vector. Even the attention-refined version can only exchange information among those gathered vectors. Think of it as making a decision from a few notes after putting the original message away.</p>
+        <p>Clef-Flash keeps the notes <em>and</em> the token-level representations of the message and schema. An option can use its starting vector to ask which parts of that shared evidence matter to it. For the team question, Billing could draw on “charged twice,” while Account access could draw on “I can still log in.” These examples illustrate the information paths the architecture permits, not measured attention from a model run.</p>
+        <p>The head then changes scale: it builds one vector for each field—Team, Refund, and Urgency—and lets those fields exchange information while reading the same token evidence again. Instead of only asking “Which team fits?”, it can assess the team decision in the context of the refund and urgency questions. The routed option vectors are kept separately for final scoring. This is what makes the head <strong>joint</strong>: related questions interact before their options are scored, although the model still returns a separate probability distribution for each field and does not enforce logical consistency.</p>
+        <p>Both architectures read supplied input rather than generate an answer. The <a href="https://blog.cloudflare.com/clef-decision-models">Cloudflare blog post</a> calls Clef’s backbone evaluation a <strong>prefill-only Qwen pass</strong>: process the packed request once to obtain hidden states, with no subsequent answer-token generation loop. The extra work happens in the head—first options read token evidence, then fields interact and read that evidence again. The important difference from Part I is therefore <strong>what the head can access and what interacts inside it</strong>, not a return to text generation.</p>
+        <p>Requests can also include images or videos. Qwen’s vision encoder supplies features at media-placeholder positions in the text stream. The decision head then works over the resulting hidden states in the same way. Text-only requests bypass vision processing.</p>
+
+        <figure class="visual" id="clef-overview-diagram">
+        <div class="figure-heading"><span class="eyebrow">From candidate scoring to a joint schema head</span><span>Read from top to bottom ↓</span></div>
+        <div class="diagram-scroll" tabindex="0" role="region" aria-label="Clef-Flash overview; scroll horizontally on small screens">
+          <svg class="architecture-map clef-map" viewBox="0 0 1120 640" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clef-overview-title clef-overview-desc">
+            <title id="clef-overview-title">One backbone pass, two evidence-reading stages, and per-field outputs</title>
+            <desc id="clef-overview-desc">A packed state and schema pass through Qwen. All hidden states become shared token memory. Option queries cross-attend to that memory in two routing layers. Routed options contribute to one vector per field. Four decoder layers let fields interact and read token memory again. Retained options and decoded fields feed a joint scorer, while a lexical prior bypasses attention. Scores are normalized separately for each question.</desc>
+            <defs><marker id="clef-overview-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+            <rect class="layer" x="250" y="25" width="600" height="65" rx="6"/><text x="550" y="52" class="center block-title">State + all schema fields</text><text x="550" y="76" class="center small">one packed sequence → Qwen3.5-9B → hidden states</text>
+            <path class="clef-edge" d="M550 92V121"/>
+            <rect class="memory-block" x="35" y="130" width="200" height="330" rx="6"/><text x="135" y="175" class="center">Token memory</text><text x="135" y="207" class="center" data-tex="M\in\mathbb{R}^{N\times D}">M: N × D</text><text x="135" y="244" class="center small">all unpadded tokens</text><text x="135" y="277" class="center small">shared keys + values</text>
+            <rect class="layer" x="310" y="130" width="510" height="75" rx="6"/><text x="565" y="159" class="center">Build one query per option</text><text x="565" y="185" class="center small">context + lexical content + question</text>
+            <path class="clef-edge" d="M565 207V237M235 170H295V269H310"/>
+            <rect class="head-block" x="310" y="245" width="510" height="65" rx="6"/><text x="565" y="273" class="center">2 × option-to-token cross-attention</text><text x="565" y="297" class="center small">routed options retained for scoring</text>
+            <path class="clef-edge" d="M565 312V345"/>
+            <rect class="layer" x="310" y="350" width="510" height="50" rx="6"/><text x="565" y="381" class="center">Assemble one vector per field</text>
+            <path class="clef-edge" d="M565 402V425M235 380H280V458H310"/>
+            <rect class="head-block" x="310" y="430" width="510" height="65" rx="6"/><text x="565" y="456" class="center">4 × joint field decoder</text><text x="565" y="482" class="center small">field self-attention + token cross-attention</text>
+            <path class="clef-edge" d="M565 497V529"/><path class="clef-side-edge" d="M820 277H850V555H820"/>
+            <rect class="prior-block" x="895" y="350" width="190" height="145" rx="6"/><text x="990" y="391" class="center">Lexical prior</text><text x="990" y="423" class="center small">question + global</text><text x="990" y="453" class="center small">lexical options</text><path class="clef-side-edge" d="M990 497V555H820"/>
+            <rect class="layer" x="310" y="535" width="510" height="75" rx="6"/><text x="565" y="563" class="center">Prior + gated joint score</text><text x="565" y="590" class="center small">per-field softmax → typed answers</text>
+          </svg>
+        </div>
+        <figcaption><strong>Figure 12 · The concrete head reads evidence twice.</strong> Options first read token memory; fields later read the same memory while interacting with other fields. The purple paths retain routed options and carry the lexical prior to scoring. This simplified view follows the <a href="../architecture/architecture-diagram.html">complete implementation map</a>.</figcaption>
+      </figure>
+
+        <details><summary>Input packing in the implementation</summary><div class="detail-body"><p>The encoder builds a system prompt, a <code>STATE:</code> region, <code>SCHEMA FIELDS:</code>, and a fixed assistant suffix ending in <code>JOINT SCHEMA DECISIONS:</code>. Each field includes its ID, type, instructions, and allowed options. An option span covers serialized option ID and description text; an instruction span covers instruction text only.</p><p>The default encoder budget is 16,384 tokens. It truncates state text to fit while retaining the fixed schema and suffix; oversized fixed content raises an error. This is a request-encoding limit, not the backbone’s maximum positional capacity. Records are right-padded for a batched backbone pass, then processed individually by the head.</p><p class="note">Source: <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_schema_model.py">encode_record(), collate_records(), and ClefModel.forward()</a>; <a href="../config.json">backbone config</a>.</p></div></details>
+      </section>
+
+      <section id="clef-memory" class="chapter-section">
+        <p class="kicker">06 / Keep the evidence</p>
+        <h2>Build pooled vectors and token memory</h2>
+        <p>Clef-Flash first applies a learned LayerNorm to the backbone hidden states and removes each record’s padding. Call the resulting sequence \(\widehat{H}\in\mathbb{R}^{N\times d}\). Instead of gathering only the final token of each candidate, the head averages over the recorded spans:</p>
+        <div class="formula">\[\begin{aligned}
+          q_i &amp;= \operatorname{mean}_{n\in I_i}\widehat{H}_n \\
+          c_{ij} &amp;= \operatorname{mean}_{n\in S_{ij}}\widehat{H}_n \\
+          g &amp;= \widehat{H}_{N-1}
+        \end{aligned}\]</div>
+        <p>Here \(I_i\) is question i’s instruction span and \(S_{ij}\) is its option j’s span. Thus \(q_i\) represents the question, \(c_{ij}\) represents the option in context, and g is the global suffix state. All three remain 4,096-wide. Mean pooling is a different readout choice from endpoint gathering, not a claim that pooling removes the backbone’s order dependence.</p>
+        <aside class="reading-note" id="clef-option-span-example">
+          <p>For example:<br>
+            \(i\): the <strong>Team</strong> question.<br>
+            \(j\): its <strong>Billing</strong> option.<br>
+            \(S_{ij}\): the positions of the tokens encoding that option’s serialized ID and description.
+          </p>
+        </aside>
+        <p>In parallel, every unpadded token is projected into a shared memory:</p>
+        <div class="formula">\[M=\widehat{H}W_{\mathrm{memory}}^\top\in\mathbb{R}^{N\times D}\]</div>
+        <p>The memory contains <strong>the whole encoded request</strong>: state tokens, instructions, option descriptions, formatting, and suffix. It is not a separate database or an external retrieval index. The head will use M as keys and values in cross-attention. The pooled vectors provide starting points; memory keeps more detailed contextual evidence available.</p>
+        <h3>A second view of each option: lexical content</h3>
+        <p>For each option, the code also looks up its token IDs in the backbone’s output-embedding matrix \(E_{\mathrm{out}}\) and averages those rows:</p>
+        <div class="formula">\[\ell_{ij}=\frac{1}{|S_{ij}|}\sum_{n\in S_{ij}} E_{\mathrm{out}}[x_n]\in\mathbb{R}^{d}\]</div>
+        <p>The contextual vector \(c_{ij}\) depends on the option’s position and preceding text. The lexical vector \(\ell_{ij}\) instead comes from a parameter-table lookup of the serialized option tokens. For a fixed option token sequence and fixed model weights, it does not depend on the surrounding request. Because the span contains the option ID and description, it reflects both—not just a clean natural-language team name.</p>
+        <figure class="visual" id="clef-memory-diagram">
+          <div class="figure-heading"><span class="eyebrow">Pool the spans / retain every token</span><span>Read from top to bottom ↓</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Pooled vectors, token memory, and lexical embeddings; scroll horizontally on small screens">
+            <svg class="architecture-map clef-map memory-map" viewBox="0 0 1120 660" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clef-memory-title clef-memory-desc">
+              <title id="clef-memory-title">Two contextual readouts and a separate lexical lookup</title>
+              <desc id="clef-memory-desc">After LayerNorm and padding removal, every request token has a 4096-dimensional hidden state. The same hidden states feed two branches: mean pooling instruction and option spans and selecting the final suffix state produces question, contextual option, and global vectors; a shared learned projection preserves all N token rows at width 1024 as memory for later cross-attention. A separate branch averages output-embedding rows indexed by an option's token IDs to produce its 4096-dimensional lexical vector. Colored rows and token counts are schematic; formatting and other fields are included in memory but not drawn individually.</desc>
+              <defs>
+                <marker id="clef-memory-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker>
+                <g id="clef-memory-tokens"><rect width="24" height="30" rx="2"/><rect x="32" width="24" height="30" rx="2"/><rect x="64" width="24" height="30" rx="2"/><rect x="96" width="24" height="30" rx="2"/></g>
+              </defs>
+              <text x="35" y="30" class="stage">ONE CONTEXTUAL VECTOR PER TOKEN · AFTER LAYERNORM + PADDING REMOVAL</text>
+              <rect class="memory-block" x="35" y="48" width="1050" height="117" rx="7"/>
+              <text x="65" y="79" class="small" data-tex="\widehat H\in\mathbb{R}^{N\times4096}">Ĥ: N × 4,096</text>
+              <text x="320" y="79" class="small center">State + formatting</text>
+              <text x="545" y="79" class="small center">Instruction span</text>
+              <text x="770" y="79" class="small center">Option span · ID + description</text>
+              <text x="1000" y="79" class="small center">Suffix</text>
+              <use href="#clef-memory-tokens" class="neutral-token" x="260" y="100"/>
+              <use href="#clef-memory-tokens" class="choice-three" x="485" y="100"/>
+              <use href="#clef-memory-tokens" class="choice-one" x="710" y="100"/>
+              <rect class="answer-token faded" x="954" y="100" width="24" height="30" rx="2"/><rect class="answer-token" x="986" y="100" width="24" height="30" rx="2"/>
+              <text x="560" y="150" class="small center">Schematic token rows · the full sequence also contains the other fields and options</text>
+
+              <path class="memory-edge" d="M290 167V226M850 167V226"/>
+              <text x="310" y="201" class="small">Selected spans / final token</text>
+              <text x="830" y="201" class="small right">Every token</text>
+              <rect class="layer" x="35" y="235" width="510" height="220" rx="7"/>
+              <text x="60" y="267" class="stage">COMPACT CONTEXTUAL READOUTS · WIDTH 4,096</text>
+              <rect class="choice-three" x="60" y="291" width="150" height="36" rx="4"/><text x="135" y="315" class="small center">Instructions</text>
+              <path class="memory-edge" d="M215 309H250"/><text x="270" y="315" class="small">Mean →</text><text x="385" y="315" data-tex="q_i">qᵢ</text>
+              <rect class="choice-one" x="60" y="343" width="150" height="36" rx="4"/><text x="135" y="367" class="small center">Option span</text>
+              <path class="memory-edge" d="M215 361H250"/><text x="270" y="367" class="small">Mean →</text><text x="385" y="367" data-tex="c_{ij}">cᵢⱼ</text>
+              <rect class="answer-token" x="60" y="395" width="150" height="36" rx="4"/><text x="135" y="419" class="small center">Suffix</text>
+              <path class="memory-edge" d="M215 413H250"/><text x="270" y="419" class="small">Last →</text><text x="385" y="419" data-tex="g">g</text>
+
+              <rect class="memory-block" x="595" y="235" width="490" height="220" rx="7"/>
+              <text x="620" y="267" class="stage">TOKEN MEMORY · N ROWS RETAINED</text>
+              <text x="840" y="304" class="center">Shared learned projection</text>
+              <text x="840" y="330" class="small center">4,096 → 1,024 per token · no pooling</text>
+              <path class="memory-edge" d="M840 342V366"/>
+              <rect class="neutral-token" x="640" y="382" width="50" height="18" rx="2"/>
+              <rect class="choice-three" x="640" y="406" width="50" height="18" rx="2"/>
+              <rect class="choice-one" x="702" y="382" width="50" height="18" rx="2"/>
+              <rect class="answer-token" x="702" y="406" width="50" height="18" rx="2"/>
+              <text x="890" y="392" class="center" data-tex="M\in\mathbb{R}^{N\times1024}">M: N × 1,024</text>
+              <text x="890" y="423" class="small center">Keys + values for later attention</text>
+
+              <text x="35" y="494" class="stage">SEPARATE LEXICAL PATH · TOKEN IDS, NOT CONTEXTUAL HIDDEN STATES</text>
+              <rect class="choice-one" x="35" y="515" width="220" height="65" rx="6"/>
+              <text x="145" y="542" class="center">Option token IDs</text><text x="145" y="565" class="small center">Same option span</text>
+              <path class="memory-edge" d="M260 547H340"/>
+              <rect class="lexical-block" x="345" y="515" width="390" height="65" rx="6"/>
+              <text x="540" y="542" class="center">Look up output-embedding rows</text><text x="540" y="565" class="small center">Average the selected 4,096-wide rows</text>
+              <path class="memory-edge" d="M740 547H820"/>
+              <rect class="lexical-block" x="825" y="515" width="260" height="65" rx="6"/>
+              <text x="955" y="542" class="center" data-tex="\ell_{ij}\in\mathbb{R}^{4096}">ℓᵢⱼ ∈ ℝ⁴⁰⁹⁶</text><text x="955" y="565" class="small center">Lexical option vector</text>
+              <text x="560" y="624" class="small center">Pooling creates starting vectors; memory preserves token-level access. Neither path generates text.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 13 · Keep the details alongside the summaries.</strong> The top branches use the same normalized Qwen hidden states: the left compresses selected spans into vectors, while the right retains a projected row for every token. The bottom path builds a lexical option vector directly from token IDs and the output-embedding table. Colors identify illustrative token groups, not feature values or measured attention.</figcaption>
+        </figure>
+        <aside class="reading-note"><p><strong>The language-model output weights are reused, not used to generate.</strong> Clef-Flash skips next-token vocabulary-logit computation, but still reads rows of the output-embedding matrix. The release config does not tie this matrix to the input embedding table. A lexical vector is a feature representation, not a vocabulary probability.</p></aside>
+        <p class="note">Source: <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_schema_model.py">JointSchemaHead.forward(), lines 353–386</a>; embedding configuration in <a href="../config.json">config.json</a>.</p>
+      </section>
+
+      <section id="clef-routing" class="chapter-section">
+        <p class="kicker">07 / Let each option read the state</p>
+        <h2>Turn an option into an evidence query</h2>
+        <p>A pooled Billing vector is not yet an explicit representation of why Billing fits this request. The head therefore combines three projected signals: the option in context, its lexical content, and the question it belongs to. Using column-vector notation for individual vectors:</p>
+        <div class="formula">\[r^{(0)}_{ij}=W_{\mathrm{context}}c_{ij}+W_{\mathrm{lexical}}\ell_{ij}+W_{\mathrm{oq}}q_i\in\mathbb{R}^{D}\]</div>
+        <p>These are three distinct, bias-free projections from 4,096 to 1,024 dimensions. The question term matters: the same option wording can play different roles under different instructions. The queries for all O options are concatenated into a short sequence R.</p>
+        <figure class="visual" id="clef-routing-diagram">
+          <div class="figure-heading"><span class="eyebrow">Option queries → shared token memory</span><span>Cross-attention, not option self-attention</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Evidence routing diagram; scroll horizontally on small screens">
+            <svg class="architecture-map clef-map routing-map" viewBox="0 0 1120 420" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clef-routing-title clef-routing-desc">
+              <title id="clef-routing-title">Each option reads shared token evidence through cross-attention</title>
+              <desc id="clef-routing-desc">Billing, Technical support, and Account access option queries enter two evidence-routing layers. All token memory supplies keys and values. Three enriched option vectors leave the layers. The other questions' options take the same path. There is no option-to-option self-attention inside these routing layers.</desc>
+              <defs><marker id="clef-routing-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+              <text x="45" y="40" class="stage">OPTION QUERIES</text>
+              <rect class="choice-one" x="45" y="70" width="215" height="45" rx="5"/><text x="152" y="98" class="center">Billing</text>
+              <rect class="choice-two" x="45" y="140" width="215" height="45" rx="5"/><text x="152" y="168" class="center">Technical support</text>
+              <rect class="choice-three" x="45" y="210" width="215" height="45" rx="5"/><text x="152" y="238" class="center">Account access</text>
+              <path class="routing-edge" d="M265 92H345M265 162H345M265 232H345"/>
+              <rect class="head-block" x="350" y="70" width="340" height="185" rx="6"/><text x="520" y="130" class="center block-title">Evidence routing</text><text x="520" y="168" class="center">2 × cross-attention + FFN</text><text x="520" y="203" class="center small">16 heads · width 1,024</text>
+              <path class="routing-edge" d="M695 92H790M695 162H790M695 232H790"/>
+              <text x="860" y="40" class="stage center">ROUTED OPTIONS</text><text x="860" y="92" class="center c1 routed-label" data-math-align="center" data-tex="r_{i1}">rᵢ₁</text><text x="860" y="162" class="center c2 routed-label" data-math-align="center" data-tex="r_{i2}">rᵢ₂</text><text x="860" y="232" class="center c3 routed-label" data-math-align="center" data-tex="r_{i3}">rᵢ₃</text>
+              <rect class="memory-block" x="320" y="295" width="400" height="55" rx="5"/><text x="520" y="327" class="center">M supplies keys and values</text><path class="routing-edge" d="M520 291V260"/>
+              <text x="520" y="392" class="small center">Other fields’ options use the same layers.</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 14 · The option asks where its evidence is.</strong> The three team queries illustrate one field; refund and urgency options are routed too. The memory is shared, but each option has its own query. This diagram does not depict measured attention weights.</figcaption>
+        </figure>
+        <p>Each of the two <code>EvidenceRoutingLayer</code> blocks applies pre-normalized cross-attention and a residual feedforward update:</p>
+        <div class="formula">\[\begin{aligned}
+          R' &amp;= R+\operatorname{MHA}(\operatorname{LN}(R),\operatorname{LN}(M),\operatorname{LN}(M)) \\
+          R'' &amp;= R'+\operatorname{FFN}(\operatorname{LN}(R'))
+        \end{aligned}\]</div>
+        <p>The query rows are options; the key and value rows are tokens. In our example, the Billing query could draw on “charged twice,” while Account access could draw on “I can still log in.” These are explanations of what the attention operation permits, not verified descriptions of what a particular model run attends to.</p>
+        <p>Importantly, <strong>these routing layers do not self-attend across options</strong>. Concatenating all queries makes the operation convenient to compute together, but each query reads the shared token memory. This differs from Part I’s refinement layer, which directly mixed the selected candidate and answer rows.</p>
+        <p>The release uses 16 attention heads and a feedforward network \(1024\rightarrow4096\rightarrow1024\), with GELU. After both layers, the O routed vectors are split back into their question-specific option lists. We will call those final vectors \(r_{ij}\), keeping them available for scoring later.</p>
+        <p class="note">Source: <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_schema_model.py">EvidenceRoutingLayer and option-query construction, lines 242–278 and 388–403</a>; <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_head_config.json">head configuration</a>.</p>
+      </section>
+
+      <section id="clef-fields" class="chapter-section">
+        <p class="kicker">08 / Let related decisions interact</p>
+        <h2>One field vector for each question</h2>
+        <p>The next stage changes the unit of computation. Instead of refining every option together with an answer vector, Clef-Flash constructs one vector for each <strong>field</strong>—its name for a question in the schema. This vector starts with the question and a weighted summary of that question’s routed options.</p>
+        <div class="formula">\[\begin{aligned}
+          b_i &amp;= W_{\mathrm{question}}q_i \\
+          \alpha_{ij} &amp;= \operatorname{softmax}_{j}\!\left(\frac{r_{ij}^{\top}b_i}{\sqrt{D}}\right) \\
+          z_i &amp;= \sum_{j=1}^{K_i}\alpha_{ij}r_{ij} \\
+          f_i^{(0)} &amp;= b_i+\operatorname{LN}(z_i)+W_{\mathrm{global}}g+e_{\mathrm{type}(i)}
+        \end{aligned}\]</div>
+        <p>The question projection \(W_{\mathrm{question}}\) is separate from the projection used in option queries. The type embedding marks whether the field is <code>noul</code>, <code>choice</code>, or <code>score</code>. The same global suffix representation contributes to every field, while the question and option summary make each field distinct.</p>
+        <aside class="reading-note"><p><strong>Summary weights are not answer probabilities.</strong> The \(\alpha_{ij}\) values determine how to construct a field’s starting representation. They are an internal pooling operation. Final option probabilities are computed later, after field decoding and scoring.</p></aside>
+        <p>The Q field vectors then pass through four pre-normalized transformer decoder layers. Each layer has field-to-field self-attention, field-to-token cross-attention, and a feedforward network, with residual connections around each sublayer. The cross-attention reads the same M used during option routing.</p>
+        <figure class="visual" id="clef-fields-diagram">
+          <div class="figure-heading"><span class="eyebrow">Joint decoding happens over fields</span><span>Options take a separate path to scoring</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Joint field decoding diagram; scroll horizontally on small screens">
+            <svg class="architecture-map clef-map" viewBox="0 0 1120 390" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clef-fields-title clef-fields-desc">
+              <title id="clef-fields-title">Three field vectors interact and read token memory</title>
+              <desc id="clef-fields-desc">Team, Refund, and Urgency field vectors enter four joint decoder layers containing all-to-all field self-attention and field-to-token cross-attention. The shared token memory supplies keys and values. Decoded field vectors leave the decoder. Routed options bypass the field decoder and are retained for each field's final scoring.</desc>
+              <defs><marker id="clef-fields-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+              <text x="190" y="35" class="center stage">ONE ROW PER FIELD</text>
+              <rect class="layer" x="70" y="60" width="240" height="45" rx="5"/><text x="190" y="88" class="center">Team · choice</text>
+              <rect class="layer" x="70" y="125" width="240" height="45" rx="5"/><text x="190" y="153" class="center">Refund · noul</text>
+              <rect class="layer" x="70" y="190" width="240" height="45" rx="5"/><text x="190" y="218" class="center">Urgency · score</text>
+              <path class="fields-edge" d="M315 82H380"/>
+              <path class="fields-edge" d="M315 147H380"/>
+              <path class="fields-edge" d="M315 212H380"/>
+              <rect class="head-block" x="385" y="60" width="350" height="175" rx="6"/><text x="560" y="99" class="center block-title">4 × field decoder</text><text x="560" y="139" class="center">Field ↔ field self-attention</text><text x="560" y="170" class="center">Field → token cross-attention</text><text x="560" y="206" class="center small">FFN + residuals · final LayerNorm</text>
+              <path class="fields-edge" d="M740 82H835"/>
+              <path class="fields-edge" d="M740 147H835"/>
+              <path class="fields-edge" d="M740 212H835"/>
+              <text x="930" y="82" class="center field-output-label" data-math-align="center" data-tex="f_{\mathrm{team}}">f_team</text><text x="930" y="147" class="center field-output-label" data-math-align="center" data-tex="f_{\mathrm{refund}}">f_refund</text><text x="930" y="212" class="center field-output-label" data-math-align="center" data-tex="f_{\mathrm{urgency}}">f_urgency</text>
+              <rect class="memory-block" x="385" y="275" width="350" height="40" rx="5"/><text x="560" y="302" class="center">Shared token memory</text><path class="fields-edge" d="M560 270V240"/>
+              <path class="clef-side-edge fields-edge" d="M70 349H990"/><text x="560" y="373" class="center small">Routed option vectors bypass this decoder → retained for scoring</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 15 · Fields interact; options are retained.</strong> There are three decoder rows in the running example, not eight option rows. The decoder has no causal field mask, so every field can attend to the others. Its name does not imply autoregressive answer generation.</figcaption>
+        </figure>
+        <p>The team field can now use information represented in the refund field, and vice versa. The architecture permits that interaction; it does not hard-code a rule such as “refund implies Billing,” nor ensure that all outputs will be logically consistent.</p>
+        <p>After four layers, a final field LayerNorm produces \(f_i\in\mathbb{R}^{D}\). The routed options do <strong>not</strong> enter these decoder layers as rows. They remain separate, ready to be paired with their own decoded field.</p>
+        <div class="takeaway"><span class="eyebrow">What “joint” means here</span><p>Questions share evidence and interact through their representations. The model still returns a separate probability distribution for each field—not an explicit joint distribution over every combination of answers.</p></div>
+        <p class="note">Source: <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_schema_model.py">field construction and decoding, lines 405–424</a>. Four decoder layers, 16 heads, and a 4,096-wide feedforward network are set by <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_head_config.json">joint_head_config.json</a>.</p>
+      </section>
+
+      <section id="clef-scoring" class="chapter-section">
+        <p class="kicker">09 / Compare, combine, and return</p>
+        <h2>Two scoring paths, one logit per option</h2>
+        <p>We have reached the same conceptual point as Part I: turn representations into option scores. But Clef-Flash does not use a shared bilinear matrix here. It combines a <strong>lexical similarity prior</strong> with a <strong>learned joint score</strong>, gated by a learned scalar.</p>
+        <p>At this point, the head has a refined decision context for each field, an evidence-enriched vector for each possible answer, and a lexical vector representing each option’s token content. It now assesses every option in two complementary ways: a more direct comparison using its wording, and an evidence-conditioned comparison using the refined field and option vectors.</p>
+        <h3>The prior bypasses the head’s attention layers</h3>
+        <p>For <span class="c1">Billing</span>, this branch asks:</p>
+        <blockquote class="scoring-question">“How compatible is this option’s wording with the question and overall request?”</blockquote>
+        <p>It compares the lexical <span class="c1">Billing</span> vector with the original question vector plus the global request vector, without passing through the head’s attention layers. This is not just keyword matching: the lexical embeddings are learned, and the question and global vectors already contain context from Qwen.</p>
+        <p>The prior compares the lexical option vector with the sum of the original question vector and global suffix vector:</p>
+        <div class="formula">\[\operatorname{prior}_{ij}=\tau_{\mathrm{prior}}\,\cos(\ell_{ij},q_i+g)\]</div>
+        <p>This computation stays at width 4,096. It bypasses option routing and field decoding, although its question and global inputs still come from the contextualized backbone. “Prior” is the implementation’s name for an additive score branch; it is not a separately normalized Bayesian prior.</p>
+        <h3>The joint score compares a field with each routed option</h3>
+        <p>This branch asks a richer question:</p>
+        <blockquote class="scoring-question">“Given the evidence gathered for <span class="c1">Billing</span> and the refined context of the <span class="field-name">Team</span> decision, how well does <span class="c1">Billing</span> fit?”</blockquote>
+        <p>It pairs the <span class="field-name">Team</span> field, after it has interacted with Refund and Urgency and reread token evidence, with the <span class="c1">Billing</span> option, after its evidence-routing updates.</p>
+        <p>First normalize the routed option with a learned LayerNorm, \(u_{ij}=\operatorname{LN}(r_{ij})\). Then construct a feature vector that describes both representations and their relationship:</p>
+        <div class="formula">\[\begin{aligned}
+          v_{ij} &amp;= [f_i;u_{ij};f_i\odot u_{ij};|f_i-u_{ij}|] \\
+          v_{ij} &amp;\in\mathbb{R}^{4D} \\
+          \operatorname{joint}_{ij} &amp;= \tau_{\mathrm{joint}}\,\cos(f_i,u_{ij})+\operatorname{MLP}(v_{ij})
+        \end{aligned}\]</div>
+        <p>The concatenation includes the field, the option, their elementwise product, and their absolute difference. A shared MLP maps \(4096\rightarrow1024\rightarrow1\), with GELU between its two linear layers. It can learn a nonlinear compatibility correction alongside the scaled cosine term. Neither the MLP nor the cosine scale has a separate parameter set for Billing or any other candidate ID.</p>
+        <p>In simple terms, cosine similarity measures how aligned the two vectors are. The MLP—a small learned neural network—adds a more flexible compatibility assessment, using both vectors and their products and differences. The same machinery scores Billing, Technical support, and every other supplied option; there is no dedicated Billing output neuron.</p>
+        <figure class="visual" id="clef-scoring-diagram">
+          <div class="figure-heading"><span class="eyebrow">A lexical path + an evidence-conditioned path</span><span>Both produce scalar scores</span></div>
+          <div class="diagram-scroll" tabindex="0" role="region" aria-label="Two-branch Clef-Flash scoring diagram; scroll horizontally on small screens">
+            <svg class="architecture-map clef-map" viewBox="0 0 1120 340" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="clef-scoring-title clef-scoring-desc">
+              <title id="clef-scoring-title">Combine a lexical prior with a gated joint score</title>
+              <desc id="clef-scoring-desc">Question plus global vector and lexical option feed a scaled cosine prior. Decoded field and normalized routed option feed a scaled cosine plus a nonlinear MLP. A learned sigmoid gate multiplies only the joint branch. Adding the branches produces one logit per option, and softmax is taken across options within each field.</desc>
+              <defs><marker id="clef-scoring-arrow" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0 0L8 4L0 8Z" fill="#527d70"/></marker></defs>
+              <rect class="prior-block" x="65" y="35" width="445" height="110" rx="6"/><text x="287" y="65" class="center">Lexical prior · width 4,096</text><text x="287" y="102" class="center" data-tex="\tau_{\mathrm{prior}}\cos(\ell_{ij},q_i+g)">scaled cosine of lexical option and question + global</text><text x="287" y="131" class="center small">no routing or field decoder on this branch</text>
+              <rect class="head-block" x="610" y="35" width="445" height="110" rx="6"/><text x="832" y="65" class="center">Joint score · field and option width 1,024</text><text x="832" y="102" class="center" data-tex="\tau_{\mathrm{joint}}\cos(f_i,u_{ij})+\operatorname{MLP}(v_{ij})">scaled cosine + interaction MLP</text><text x="832" y="131" class="center small">uses decoded field and retained routed option</text>
+              <path class="scoring-edge" d="M287 150V237H515"/>
+              <path class="scoring-edge" d="M832 150V237H575"/>
+              <text x="630" y="212" class="center gate-label" data-math-align="center" data-tex="\times\,\sigma(\gamma)">× σ(γ)</text>
+              <circle class="sum-node" cx="545" cy="237" r="24"/><text x="545" y="244" class="center">+</text><path class="scoring-edge" d="M545 264V282"/>
+              <text x="545" y="312" class="center" data-tex="L_{ij}\;\longrightarrow\;\operatorname{softmax}_j(L_{ij})">one logit per option → per-field softmax</text>
+            </svg>
+          </div>
+          <figcaption><strong>Figure 16 · The gate scales the joint branch, not the prior.</strong> Both branches are evaluated for each option. Learned scales adjust their cosine terms; a learned sigmoid gate controls the added joint score. This is not a bilinear readout.</figcaption>
+        </figure>
+        <p>Clef adds the lexical-prior score to a scaled version of the joint score. A learned gate controls how much the joint branch contributes. The result is one final score per option, called a <strong>logit</strong>; it is not yet a probability. The branches combine as:</p>
+        <div class="formula">\[\begin{aligned}
+          L_{ij} &amp;= \operatorname{prior}_{ij}+\sigma(\gamma)\operatorname{joint}_{ij} \\
+          p_{ij} &amp;= \frac{\exp(L_{ij})}{\sum_{k=1}^{K_i}\exp(L_{ik})}
+        \end{aligned}\]</div>
+        <p>The gate \(\gamma\) and both log scales are shared learned scalars. In the code, each cosine scale is \(\tau=\exp(\min(\eta,\log 100))\), so its maximum is 100. The sigmoid gate lies between zero and one; it is not a request-specific routing decision or a normalized mixture weight for the two branches.</p>
+        <p>Softmax runs <strong>within each question’s own options</strong>, not across all O options in the request. The Billing option competes with the other teams, not with the refund field’s True option. The head returns variable-length logit tensors for each field, so it does not allocate a fixed 255-option output bank. Padded backbone tokens have already been removed from memory.</p>
+        <p>Think of this as three separate competitions: Billing versus the other teams; True versus False; and Routine versus Soon versus Immediate. Softmax converts the scores in each competition into probabilities that sum to one. The fields have shared information upstream, but their options do not compete across field boundaries.</p>
+        <h3 id="typed-readout">Three answer types share the same probability machinery</h3>
+        <p>The API converts each field’s distribution into its requested type:</p>
+        <ul class="article-list">
+          <li><strong><code>choice</code>:</strong> return the highest-probability option ID, its winning probability as confidence, and the option probabilities.</li>
+          <li><strong><code>noul</code>:</strong> score the two allowed options, True and False, then return \(P(\mathrm{true})\). Despite the name, this is a boolean/proposition readout—not a “null” or abstention mode.</li>
+          <li><strong><code>score</code>:</strong> enumerate the supplied levels from zero and return their expected index, \(\sum_j j\,p_{ij}\), along with the probabilities and legend. Its reported confidence is the maximum option probability, not a confidence interval for the expectation.</li>
+        </ul>
+        <p>For example, an illustrative urgency distribution of 60% Routine, 30% Soon, and 10% Immediate—[0.6, 0.3, 0.1] over levels 0, 1, and 2—would return a score of 0.5, not just the winning level 0. It is the average level index weighted by the probabilities. This number inherits the meaning and spacing of the application’s level definitions; the head itself still predicts a categorical distribution.</p>
+        <p>No answer tokens are decoded. <code>systemone()</code> maps option IDs back to each question, rounds returned numeric values to four decimals, and reports <code>output_tokens: 0</code>. The transformer decoder inside the head performs representation refinement, not an autoregressive generation loop.</p>
+        <p class="note">Source: <a href="https://huggingface.co/Cloudflare/clef-flash/blob/main/joint_schema_model.py">scoring, typed readout, and systemone(), lines 426–457 and 523–576</a>.</p>
+        <h3>What carries over from the simple blueprint?</h3>
+        <p>Clef-Flash still makes request-defined decisions from a pretrained backbone. Shared comparison functions allow option counts to vary. But the readout is no longer just “gather, optionally self-attend, then apply a bilinear matrix.” It is <strong>pool, route evidence, construct fields, decode them jointly, and combine two scoring paths</strong>.</p>
+        <p>The caveats from Part I still apply. The packed backbone can introduce option and field order effects. Field interaction does not enforce logical constraints between answers. Softmax and the API’s confidence fields do not establish calibration. And a choice field cannot select an option missing from its criteria; boolean <code>noul</code> is not an automatic escape hatch.</p>
+        <p>The local code establishes the release’s inference architecture, not its training recipe. Cloudflare’s original blog article adds a separate account of post-training, described next; it does not provide loss weights, full dataset details, or enough information to reproduce the optimization.</p>
+        <div class="takeaway"><span class="eyebrow">The progression</span><p>The first blueprint compares representations. Clef-Flash makes those comparisons evidence-conditioned and schema-aware: each option reads the request, then each field reads both the evidence and the other fields.</p></div>
+        <p>For the full tensor flow, including vision internals and every projection, see the <a href="../architecture/architecture-diagram.html">complete Clef-Flash architecture map</a>. The crucial distinction is already visible here: we have changed the readout’s access to evidence, not returned to generating answer text.</p>
+      </section>
+
+      <section id="clef-training" class="chapter-section">
+        <p class="kicker">10 / Post-train for calibrated decisions</p>
+        <h2>Train the decision, not a text continuation</h2>
+        <p class="lead">Cloudflare describes adapting a frozen Qwen base with a learned routing head and low-rank adapters, then optimizing both answer accuracy and the quality of the reported probabilities.</p>
+        <p>This section summarizes <a href="https://blog.cloudflare.com/clef-decision-models/#how-we-trained-clef">Cloudflare’s original article, “How we trained Clef”</a>, rather than a training implementation in the repository. The article names Qwen3.5-9B for Clef-Flash, matching the local model card and release configuration. The larger Clef uses Qwen3.8-27B.</p>
+        <h3>Frozen base weights do not mean fixed representations</h3>
+        <p>According to the excerpt, the base Qwen weights remain frozen while the routing head and <strong>rank-256 low-rank adapters</strong> are jointly optimized. Adapters add trainable updates inside the backbone, so its resulting representations can still adapt to decision tasks without updating the original base weights. This differs from the head-only frozen-backbone baseline in Part I.</p>
+        <div class="two-column">
+          <article class="card"><span class="eyebrow">Supervised choice learning</span><h3>Label-smoothed cross-entropy</h3><p>The reported objective trains over valid schema outputs, with softened targets rather than placing all target mass on one choice. This discourages excessively sharp predictions during training; the excerpt does not specify the smoothing amount or its allocation.</p></article>
+          <article class="card"><span class="eyebrow">Probability quality</span><h3>Brier loss</h3><p>A Brier loss penalizes squared differences between predicted probabilities and target outcomes. It complements cross-entropy by directly evaluating the probability vector. Cloudflare describes using it to refine calibration; adding the loss does not by itself prove that deployed confidence is calibrated.</p></article>
+        </div>
+        <p>For our routing example, choosing Billing correctly is one goal. Another is making the reported probability informative: among comparable requests assigned about 80% confidence, roughly 80% should be correct. Calibration must be measured on held-out data, including the intended deployment conditions.</p>
+        <h3>Vary the schema during training</h3>
+        <p>The excerpt reports internal synthetic datasets that vary field order, prompts, and schema structure. This exposes the model to different presentations of related decisions. It is <strong>training-time robustness, not a structural equivariance guarantee</strong>: shuffled data can reduce order sensitivity without eliminating it. The architectural conditions and hybrid-backbone caveats in <a href="#order">Part I’s choice-order section</a> still apply, and ordered score levels must retain their meaning.</p>
+        <h3>RLCD adds ordinal and whole-record incentives</h3>
+        <p>Cloudflare also reports <strong>Reinforcement Learning for Calibrated Decisions (RLCD)</strong> as a secondary optimization target:</p>
+        <ul class="article-list">
+          <li><strong>Adjacent ordinal choices receive partial credit.</strong> For an urgency scale, a neighboring level can be treated differently from a distant error. This uses meaningful scale order, not arbitrary candidate-list position.</li>
+          <li><strong>Fully precise records receive a reward.</strong> The objective considers getting the complete set of field outputs right, rather than only evaluating each field separately.</li>
+          <li><strong>A reference penalty limits distribution shift.</strong> The excerpt describes discouraging excessive departure from a reference distribution, but does not specify the penalty’s exact form.</li>
+        </ul>
+        <div class="takeaway"><span class="eyebrow">Architecture and optimization work together</span><p>The head determines where decisions come from. Post-training teaches which decisions to prefer, how probabilities should behave, and how ordinal and whole-record errors should be valued. None of these objectives guarantees logical consistency or calibration on its own.</p></div>
+      </section>
+
+      <section id="sources" class="chapter-section sources">
+        <p class="kicker">Sources &amp; reading notes</p>
+
+        <p>Part I is a general educational blueprint inspired by <a href="https://www.youtube.com/watch?v=sF3CNPbWA8o">this video</a> by the "Neural Breakdown with AVB" youtube channel.</p>
+        <p>Part II describes the <a href="https://huggingface.co/Cloudflare/clef-flash">Clef-Flash implementation</a> and release configuration, supplemented by <a href="https://blog.cloudflare.com/clef-decision-models">this Cloudflare blog post</a>.</p>
+      </section>
+      </article>
+      <footer><span>LEARN CLEF / DECISION MODELS &amp; CLEF-FLASH</span><a href="#overview">Back to the beginning ↑</a></footer>
+    </main>
+  </div>
+</body>
+</html>
